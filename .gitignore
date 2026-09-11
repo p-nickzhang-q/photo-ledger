@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+*/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# llama.cpp 源码与构建产物（codeload tarball 解包，不入库）
+third_party/
+
+# 模型文件（2.8GB+，不入库）
+models/
+
+# 下载中间产物
+.scratch/photo-ledger-v1/fixtures/*.tmp
+
+# Kotlin/Native（未来 KMP 化时）
+.kotlin/
+local.properties
+
+# 真实订单截图含个人消费数据（local-first，ADR-0003），不入库；合成图用 scripts/make_synthetic_fixtures.py 再生
+.scratch/photo-ledger-v1/fixtures/
