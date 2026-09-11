@@ -14,7 +14,9 @@ ADR-0001 选定 VLM 端到端路线（截图 → Qwen3-VL-4B → Draft），前�
 提取管线改为两段式：
 
 1. **轻量 OCR**（PP-OCRv5 系，桌面经 RapidOCR/ONNX Runtime 已验证，单张秒级；移动端对应 Paddle Lite / ONNX Runtime 部署，模型 ~20MB）：截图 → 文本行（含坐标）。
-2. **文本小模型 + GBNF 约束解码**（llama.cpp 运行时不变；主选 Qwen3-0.6B/1.7B Q8_0，桌面双档对比后定稿）：OCR 文本行 → Draft JSON。此阶段复用票 01 已建成的全部引擎核心：prompt 构造、GBNF 生成器、JSON 解析与口径归一（engine 模块）、llama-server transport。
+2. **文本小模型 + GBNF 约束解码**（llama.cpp 运行时不变；**已定稿 Qwen3-0.6B Q8_0**——同一数据集同一 harness 下 0.6B 硬字段 100%/5m0s，对照 1.7B 96.7%/17m0s，见 ADR-0002 与票 02/03）：OCR 文本行 → Draft JSON。此阶段复用票 01 已建成的全部引擎核心：prompt 构造、GBNF 生成器、JSON 解析与口径归一（engine 模块）、llama-server transport。
+
+**结果（2026-09-11）**：质量闸门 PASS（票 02，30 张真实截图硬字段 100%），本路线正式确立为主路线；「VLM 复活」备选未触发。
 
 ## 理由
 
