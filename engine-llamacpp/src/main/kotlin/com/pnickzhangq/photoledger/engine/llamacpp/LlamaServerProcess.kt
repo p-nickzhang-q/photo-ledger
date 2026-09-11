@@ -34,17 +34,20 @@ class LlamaServerProcess(
         require(serverBinary.exists()) { "llama-server 不存在：${serverBinary.absolutePath}" }
         check(process == null) { "llama-server 已在运行" }
 
-        val pb = ProcessBuilder(
+        val cmd = mutableListOf(
             serverBinary.absolutePath,
             "--model", modelPath,
-            "--mmproj", mmprojPath,
             "--port", port.toString(),
             "--host", "127.0.0.1",
             "--threads", threads.toString(),
             "--ctx-size", "8192",
             "-ngl", nGpuLayers.toString(),
             "--no-webui",
-        ).redirectErrorStream(true)
+        )
+        // 纯文本路线无 mmproj（文本模型与视觉投影 n_embd 不匹配会让 llama-server 直接退出）
+        if (mmprojPath.isNotBlank()) cmd += listOf("--mmproj", mmprojPath)
+
+        val pb = ProcessBuilder(cmd).redirectErrorStream(true)
 
         val p = pb.start()
         process = p

@@ -46,22 +46,30 @@ class LlamaServerTransport(
         prompt: String,
         grammar: String,
     ): String = withContext(Dispatchers.IO) {
-        val dataUri = "data:$imageMime;base64," + Base64.getEncoder().encodeToString(imageData)
+        val content: kotlinx.serialization.json.JsonElement =
+            if (imageData.isEmpty()) {
+                // 纯文本调用（OCR 路线）：content 直接是字符串
+                kotlinx.serialization.json.JsonPrimitive(prompt)
+            } else {
+                buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "image_url")
+                        put("image_url", buildJsonObject {
+                            put("url", "data:$imageMime;base64," + Base64.getEncoder().encodeToString(imageData))
+                        })
+                    })
+                    add(buildJsonObject {
+                        put("type", "text")
+                        put("text", prompt)
+                    })
+                }
+            }
 
         val payload = buildJsonObject {
             put("messages", buildJsonArray {
                 add(buildJsonObject {
                     put("role", "user")
-                    put("content", buildJsonArray {
-                        add(buildJsonObject {
-                            put("type", "image_url")
-                            put("image_url", buildJsonObject { put("url", dataUri) })
-                        })
-                        add(buildJsonObject {
-                            put("type", "text")
-                            put("text", prompt)
-                        })
-                    })
+                    put("content", content)
                 })
             })
             put("temperature", temperature)

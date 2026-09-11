@@ -12,4 +12,10 @@ interface LlmTransport {
      * 实现负责编码（HTTP / JNI）与解码循环；抛 [RuntimeException] 表示传输层故障。
      */
     suspend fun complete(imageData: ByteArray, imageMime: String, prompt: String, grammar: String): String
+
+    /**
+     * 纯文本调用（OCR 路线，票 12）：无图像，prompt 即完整输入。
+     */
+    suspend fun completeText(prompt: String, grammar: String): String =
+        complete(ByteArray(0), "text/plain", prompt, grammar)
 }

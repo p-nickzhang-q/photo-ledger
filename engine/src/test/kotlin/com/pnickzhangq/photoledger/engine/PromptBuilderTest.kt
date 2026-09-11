@@ -23,4 +23,32 @@ class PromptBuilderTest {
         val p = PromptBuilder.build(listOf("其他"))
         assertTrue("付款时间" in p && "order_time" in p && "payment_time" in p)
     }
+
+    // ---------- OCR 版 prompt（票 12） ----------
+
+    @Test
+    fun `OCR 版 prompt 注入 OCR 文本与类别`() {
+        val p = PromptBuilder.buildFromOcr(
+            categories = listOf("餐饮", "购物"),
+            ocrText = "老王川菜馆\n实付款￥23.8",
+            normalizedDates = listOf("2026-09-09 11:42:00"),
+            amounts = listOf(23.8),
+        )
+        assertTrue("老王川菜馆" in p)
+        assertTrue("餐饮" in p && "购物" in p)
+        assertTrue("2026-09-09 11:42:00" in p)
+        assertTrue("23.8" in p)
+    }
+
+    @Test
+    fun `OCR 版 prompt 反平台名取店名`() {
+        val p = PromptBuilder.buildFromOcr(listOf("其他"), "闪购\n华莱士", emptyList(), emptyList())
+        assertTrue("店铺名" in p && "闪购" in p, "prompt 须明确优先店名并把平台名列为反例")
+    }
+
+    @Test
+    fun `OCR 版 prompt 保持实付款口径`() {
+        val p = PromptBuilder.buildFromOcr(listOf("其他"), "实付款￥1", emptyList(), emptyList())
+        assertTrue("实付" in p && "payment_time" in p && "order_time" in p)
+    }
 }

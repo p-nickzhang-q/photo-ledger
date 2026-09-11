@@ -36,8 +36,14 @@ object GrammarGenerator {
         schema.categoryEnum.joinTo(this, " | ") { "\"\\\"$it\\\"\"" }
         append("\n")
 
-        // 日期：YYYY-MM-DD[ HH:MM:SS]
-        append("date ::= \"\\\"\" [0-9] [0-9] [0-9] [0-9] \"-\" [0-9] [0-9] \"-\" [0-9] [0-9] (\" \" [0-9] [0-9] \":\" [0-9] [0-9] \":\" [0-9] [0-9])? \"\\\"\"\n")
+        // 日期：YYYY-MM-DD[ HH:MM:SS]，月/日/时/分/秒带范围约束（0 开头或 1-9 开头组合）
+        append("date ::= \"\\\"\" year \"-\" month \"-\" day (\" \" hour \":\" minute \":\" second)? \"\\\"\"\n")
+        append("year ::= [0-9] [0-9] [0-9] [0-9]\n")
+        append("month ::= \"0\" [1-9] | \"1\" [0-2]\n")
+        append("day ::= \"0\" [1-9] | [1-2] [0-9] | \"3\" [0-1]\n")
+        append("hour ::= [01] [0-9] | \"2\" [0-3]\n")
+        append("minute ::= [0-5] [0-9]\n")
+        append("second ::= [0-5] [0-9]\n")
 
         // 口径枚举
         append("dateSource ::= \"\\\"payment_time\\\"\" | \"\\\"order_time\\\"\"\n")
@@ -47,4 +53,18 @@ object GrammarGenerator {
     }.trimEnd()
 
     private val CURRENCIES = listOf("CNY", "USD", "EUR", "JPY", "GBP", "HKD", "TWD", "KRW", "OTHER")
+
+    /**
+     * OCR 路线专用：把 date 规则替换为「候选清单字面量二选一」（清单为空或不含当日候选时
+     * 允许空字符串兜底）。把生成任务降为选择任务——小模型拼日期不可靠（0.6B 实测），
+     * 从清单里选则不可能出畸形值。
+     */
+    fun withDateAlternatives(grammar: String, candidates: List<String>): String {
+        require(candidates.isNotEmpty()) { "候选清单为空时应使用原 grammar" }
+        val dateRule = grammar.lineSequence().firstOrNull { it.startsWith("date ::= ") }
+            ?: return grammar
+        val alternatives = candidates.joinToString(" | ") { "\"\\\"$it\\\"\"" }
+        val newRule = "date ::= $alternatives | \"\\\"\\\"\""
+        return grammar.lines().joinToString("\n") { if (it == dateRule) newRule else it }
+    }
 }

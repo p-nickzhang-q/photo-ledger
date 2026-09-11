@@ -23,3 +23,6 @@ local.properties
 
 # 真实订单截图含个人消费数据（local-first，ADR-0003），不入库；合成图用 scripts/make_synthetic_fixtures.py 再生
 .scratch/photo-ledger-v1/fixtures/
+
+# OCR 快照来自真实截图（含个人消费数据），不入库；测试用例用合成样例
+.scratch/ocr-snapshots/
