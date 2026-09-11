@@ -9,10 +9,10 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.system.exitProcess
 
-private val DEFAULT_CATEGORIES = listOf("餐饮", "购物", "交通", "居住", "医疗", "娱乐", "通讯", "其他")
+internal val DEFAULT_CATEGORIES = listOf("餐饮", "购物", "交通", "居住", "医疗", "娱乐", "通讯", "其他")
 
 /** RapidOCR 在专用 venv；桌面约定路径，可通过环境变量覆盖。 */
-private val OCR_PYTHON = System.getenv("OCR_PYTHON") ?: "${System.getProperty("user.home")}/.ocr-venv/bin/python"
+internal val OCR_PYTHON = System.getenv("OCR_PYTHON") ?: "${System.getProperty("user.home")}/.ocr-venv/bin/python"
 
 /**
  * 桌面一条命令跑通提取管线。
@@ -26,6 +26,40 @@ private val OCR_PYTHON = System.getenv("OCR_PYTHON") ?: "${System.getProperty("u
 fun main(args: Array<String>) = runBlocking {
     if (args.isNotEmpty() && args[0] == "--dump-grammar") {
         dumpGrammar(args.getOrElse(1) { "build/extract-grammar.gbnf" })
+        return@runBlocking
+    }
+    if (args.isNotEmpty() && args[0] == "--gate") {
+        // 用法：--gate <标注.csv> [--images 目录] [--model 路径] [--out 报告.md] [--port N]
+        var csv = ""
+        var imagesDir: String? = null
+        var model = "models/Qwen3-0.6B-Q8_0.gguf"
+        var serverBinary = "third_party/llama.cpp/build/bin/llama-server"
+        var ocrWorker = "scripts/ocr_worker.py"
+        var out: String? = null
+        var port = 8905
+        var i = 1
+        while (i < args.size) {
+            when (args[i]) {
+                "--images" -> imagesDir = args[++i]
+                "--model" -> model = args[++i]
+                "--server-binary" -> serverBinary = args[++i]
+                "--ocr-worker" -> ocrWorker = args[++i]
+                "--out" -> out = args[++i]
+                "--port" -> port = args[++i].toInt()
+                else -> if (csv.isEmpty()) csv = args[i]
+            }
+            i++
+        }
+        require(csv.isNotEmpty()) { "--gate 需要 <标注.csv> 路径" }
+        runGate(
+            annotationCsv = File(csv),
+            imagesDir = imagesDir?.let { File(it) },
+            model = model,
+            serverBinary = serverBinary,
+            ocrWorker = ocrWorker,
+            port = port,
+            outPath = out,
+        )
         return@runBlocking
     }
     if (args.isEmpty()) {
