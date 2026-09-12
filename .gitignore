@@ -3,6 +3,9 @@
 build/
 */build/
 
+# Android native 构建缓存（CMake/NDK 中间产物）
+.cxx/
+
 # IDE
 .idea/
 *.iml
@@ -16,6 +19,10 @@ models/
 
 # 下载中间产物
 .scratch/photo-ledger-v1/fixtures/*.tmp
+
+# 开发期中转/截屏（不入库）
+.scratch/device-push/
+.scratch/*.png
 
 # Kotlin/Native（未来 KMP 化时）
 .kotlin/
