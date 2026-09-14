@@ -14,7 +14,7 @@
 
 **Blocked by:** 01-resolved (桌面提取管线打通——复用其集成方式结论), 12 (OCR 提取管线正式化——OCR 预处理逻辑与移动端保持同构)
 
-**Status:** in-progress
+**Status:** resolved
 
 - [ ] APK 可安装到目标机并启动，无崩溃
 - [ ] 真机 OCR：一张真实截图 → 文本行（含坐标）上屏，耗时与内存记录进 Comments
@@ -43,4 +43,30 @@
 
 **adb 推送约定**（详见 `docs/design/android-dev-model-paths.md`）：App 专属外部目录 `/sdcard/Android/data/io.github.pnickzhangq.photoledger/files/`（scoped storage 免权限直读，adb 可直接 push；adb.exe 源路径须写 Windows 风格 `D:\\...`）。加载入口 `MainActivity.scanModelDir()`：文件名前缀匹配 det/rec/cls，`.gguf` 取最大。
 
-（真机冒烟数据待补）
+### 2026-09-14 真机冒烟结果（全部通过，票 resolve）
+
+目标机 vivo V2183A（Android 16 / arm64-v8a / 11.7GB），复现命令：
+
+```
+adb shell am start -n io.github.pnickzhangq.photoledger/.MainActivity \
+  --es smoke_image /sdcard/Android/data/io.github.pnickzhangq.photoledger/files/order_01.png \
+  --ez smoke_llm true
+adb logcat -s photoledger-smoke:V   # SMOKE_* 信号全落日志，不依赖读屏
+```
+
+| 环节 | 结果 |
+|---|---|
+| APK 安装启动 | Success，无崩溃（app-debug.apk 53MB，含 llama.cpp 全量 .so）|
+| OCR（order_01 真实截图）| `SMOKE_OCR_OK lines=13 ms=1380`——13 行文本+坐标+置信度，与桌面 RapidOCR 同款结果 |
+| LLM 加载（Qwen3-0.6B Q8_0）| `SMOKE_LLM_LOAD_OK ms=2470`（mmap 加载） |
+| LLM 推理 | `SMOKE_LLM_OK ms=44438 output=2`——prompt「问：1+1=?」输出「2」等 4 个选项，答对。44s 生成约 32 token ≈ **1.4 tok/s**（Q8_0 + 手机 8 核 CPU，符合预期量级；GBNF 约束生成在票 05 端到端验证）|
+
+**实施中踩的三个坑（后续票引以为鉴）**：
+
+1. **scoped storage EACCES**：硬编码 `/sdcard/Android/data/<pkg>/files/` 路径 App 读自己目录会被拒（adb 能 push 进去但 App open() 报 Permission denied）。必须用 `getExternalFilesDir(null)` API 取路径。smoke_image intent 传入的硬编码路径也经 `resolveUnderPushDir` 归一。
+2. **单线程池死锁**：初版用 `Executors.newSingleThreadExecutor()`，onCreate 冒烟链路持有线程 awaitOcrThen 轮询等 OCR，OCR 任务排在同池队列里永远进不去。重构为 kotlinx-coroutines：顺序链路顺序写（`loadBitmap → runOcr → loadLlm → runLlm`），CPU 密集走 `Dispatchers.Default`，IO 走 `Dispatchers.IO`，`lifecycleScope` 随 Activity 取消。
+3. **JNI 函数名映射**：Kotlin `private external fun nativeBackendInit()` 对应 JNI 符号必须带 `native` 前缀（`Java_..._LlamaNative_nativeBackendInit`），初版漏了前缀导致 `UnsatisfiedLinkError: No implementation found`。另外增量构建偶发不重打包 .so（Kotlin-only 改动后 APK 缺 libphotoledger.so）——改 C++ 后建议清 `.cxx`/cxx intermediates 全量重建。
+
+**推理速度备注**：0.6B Q8_0 在 8 核手机 CPU 1.4 tok/s。票 05 的实际提取任务（prompt ~700 token + 输出 ~60 token）预计 prefill + 生成共 60-90 秒/单，可接受但偏慢；优化方向（票 05+ 备选）：Q4_K_M 量化（内存与速度均减半，质量需闸门复验）、线程数调优（当前默认 8）、`-O3` Release 构建当前是 Debug .so。
+
+**遗留到票 05**：OCR 结果与 LLM 输入的拼接（端到端截图→Draft JSON）、GBNF 约束解码真机验证（JNI complete 已支持 grammar 参数）。

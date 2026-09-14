@@ -22,7 +22,7 @@ static void log_callback(ggml_log_level level, const char * fmt, void * data) {
 
 extern "C"
 JNIEXPORT jlong JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_loadModel(JNIEnv *env, jobject, jstring filename) {
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeLoadModel(JNIEnv *env, jobject, jstring filename) {
     const auto * path = env->GetStringUTFChars(filename, nullptr);
     LOGi("loading model: %s", path);
     llama_model_params mparams = llama_model_default_params();
@@ -37,13 +37,13 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_loadModel(JNIEnv *env, jo
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_freeModel(JNIEnv *, jobject, jlong model) {
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeFreeModel(JNIEnv *, jobject, jlong model) {
     llama_model_free(reinterpret_cast<llama_model *>(model));
 }
 
 extern "C"
 JNIEXPORT jlong JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_newContext(JNIEnv *env, jobject, jlong jmodel, jint nCtx, jint nThreads) {
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeNewContext(JNIEnv *env, jobject, jlong jmodel, jint nCtx, jint nThreads) {
     auto * model = reinterpret_cast<llama_model *>(jmodel);
     if (!model) {
         env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "model is null");
@@ -67,20 +67,20 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_newContext(JNIEnv *env, j
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_freeContext(JNIEnv *, jobject, jlong ctx) {
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeFreeContext(JNIEnv *, jobject, jlong ctx) {
     llama_free(reinterpret_cast<llama_context *>(ctx));
 }
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_backendInit(JNIEnv *, jobject) {
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeBackendInit(JNIEnv *, jobject) {
     llama_log_set(log_callback, nullptr);
     llama_backend_init();
 }
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_backendFree(JNIEnv *, jobject) {
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeBackendFree(JNIEnv *, jobject) {
     llama_backend_free();
 }
 
@@ -88,7 +88,7 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_backendFree(JNIEnv *, job
 // grammar 非空时加 llama_sampler_init_grammar（GBNF 来自 engine 的 GrammarGenerator）。
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_complete(
+Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeComplete(
         JNIEnv *env, jobject,
         jlong jctx, jstring jprompt, jstring jgrammar, jint nLen) {
     auto * ctx = reinterpret_cast<llama_context *>(jctx);
