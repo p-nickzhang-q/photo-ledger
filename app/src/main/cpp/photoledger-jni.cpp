@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include "llama.h"
 #include "common.h"
+#include "ggml.h"
 
 #define TAG "photoledger-jni"
 #define LOGi(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -50,7 +51,9 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeNewContext(JNIEnv *
         return 0;
     }
     if (nThreads <= 0) {
-        nThreads = std::max(1, std::min(8, (int) sysconf(_SC_NPROCESSORS_ONLN) - 2));
+        // 大小核 SoC：优先只用性能核。1×3.05GHz + 3×2.85GHz + 4×1.8GHz（真机实测），
+        // 8-2=6 会踩 2 个能效核拖慢矩阵乘，取 min(4, 在线核数) 纯大核。
+        nThreads = std::max(1, std::min(4, (int) sysconf(_SC_NPROCESSORS_ONLN) - 4));
     }
     LOGi("new context: n_ctx=%d threads=%d", nCtx, nThreads);
     llama_context_params cparams = llama_context_default_params();
@@ -120,11 +123,13 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeComplete(
     }
     // 只对最后一个 prompt token 要 logits
     batch.logits[batch.n_tokens - 1] = true;
+    const int64_t t_prefill0 = ggml_time_ms();
     if (llama_decode(ctx, batch) != 0) {
         llama_batch_free(batch);
         env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "prefill llama_decode failed");
         return nullptr;
     }
+    const int64_t prefill_ms = ggml_time_ms() - t_prefill0;
 
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     sparams.no_perf = true;
@@ -137,11 +142,14 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeComplete(
 
     std::string out;
     out.reserve(256);
+    const int64_t t_gen0 = ggml_time_ms();
+    int n_generated = 0;
     for (int n_cur = n_prompt; n_cur < n_prompt + nLen; n_cur++) {
         const llama_token id = llama_sampler_sample(smpl, ctx, -1);
         if (llama_vocab_is_eog(vocab, id)) break;
 
         out += common_token_to_piece(vocab, id, true);
+        n_generated++;
 
         llama_batch next = llama_batch_init(1, 0, 1);
         common_batch_clear(next);
@@ -153,6 +161,12 @@ Java_io_github_pnickzhangq_photoledger_ocr_LlamaNative_nativeComplete(
             break;
         }
     }
+    // token 级打点：定位耗时是 prefill 还是解码、解码了多少 token（票10 优化依据）
+    const int64_t gen_ms = ggml_time_ms() - t_gen0;
+    LOGi("COMPLETE stats: n_prompt=%d prefill_ms=%lld n_generated=%d gen_ms=%lld (%.2f tok/s)",
+         n_prompt, (long long) prefill_ms, n_generated, (long long) gen_ms,
+         gen_ms > 0 ? n_generated * 1000.0 / gen_ms : 0.0);
+    LOGi("COMPLETE output: %s", out.c_str());
 
     llama_sampler_free(smpl);
     llama_batch_free(batch);

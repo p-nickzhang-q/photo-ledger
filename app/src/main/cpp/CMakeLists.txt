@@ -9,6 +9,20 @@ project(photoledger-native)
 # common 的模型下载功能要 CURL，端侧用不上，关掉（与桌面 engine-llamacpp 同款 -DLLAMA_CURL=OFF）
 set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+# Android 必须关 OpenMP：NDK 27 带 libomp，find_package(OpenMP) 会意外成功，
+# ggml-cpu 走 OpenMP 分支后在真机 prefill 段 SIGSEGV（memcpy 崩在 mul_mat，
+# 实测 2026-09-14）。llama.cpp CPU 后端原生 pthread 线程池设计，Android 上
+# 官方指引也是关闭 OpenMP（whisper.cpp/llama.cpp Android 集成均如此）。
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+# CPU 内核按目标 SoC 指定指令集：主目标机天玑 9000（armv8.2，支持 dotprod）。
+# 不指定时 ARM 分支零优化 flags（无 NEON dotprod），0.6B 只有 0.5 tok/s（实测）。
+# ALL_VARIANTS 需要 GGML_BACKEND_DL（.so 动态加载），Android 集成复杂，弃用。
+set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "" FORCE)
+# Android 必须关 OpenMP：NDK 27 带 libomp，find_package(OpenMP) 会意外成功，
+# ggml-cpu 走 OpenMP 分支后在真机 prefill 段 SIGSEGV（memcpy 崩在 mul_mat，
+# 实测 2026-09-14）。llama.cpp CPU 后端原生 pthread 线程池设计，Android 上
+# 官方指引也是关闭 OpenMP（whisper.cpp/llama.cpp Android 集成均如此）。
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/llama.cpp llama-build)
 
 add_library(photoledger SHARED photoledger-jni.cpp)

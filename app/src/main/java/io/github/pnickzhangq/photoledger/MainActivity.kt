@@ -196,7 +196,8 @@ class MainActivity : ComponentActivity() {
                 val t0 = System.currentTimeMillis()
                 LlamaNative.backendInit()
                 modelPtr = LlamaNative.loadModel(src)
-                ctxPtr = LlamaNative.newContext(modelPtr, nCtx = 2048)
+                // 线程数对照实验：默认 0（JNI 内推 4）。崩在 threads=4，threads=6 历史稳定。
+                ctxPtr = LlamaNative.newContext(modelPtr, nCtx = 2048, nThreads = 6)
                 llmReady = true
                 val ms = System.currentTimeMillis() - t0
                 Log.i(TAG, "SMOKE_LLM_LOAD_OK ms=$ms")
@@ -309,18 +310,29 @@ class MainActivity : ComponentActivity() {
             status.value = "票04冒烟：模型目录不存在\n${dir.absolutePath}\n(先 adb push)"
             return
         }
-        var gguf: String? = null
+        var gguf: File? = null
         for (f in dir.listFiles().orEmpty()) {
             when {
                 f.name.startsWith("ch_PP-OCRv4_det") -> detPath = f.absolutePath
                 f.name.startsWith("ch_PP-OCRv4_rec") -> recPath = f.absolutePath
                 f.name.startsWith("ch_ppocr_mobile") -> clsPath = f.absolutePath
-                f.name.endsWith(".gguf") && (gguf == null || f.length() > File(gguf).length()) -> gguf = f.absolutePath
+                f.name.endsWith(".gguf") && (gguf == null || preferredOver(f, gguf)) -> gguf = f
             }
         }
-        ggufPath = gguf
+        ggufPath = gguf?.absolutePath
         val found = "det=${detPath != null} rec=${recPath != null} cls=${clsPath != null} gguf=${gguf != null}"
         status.value = "票04冒烟：1.选截图 → 2.OCR → 3.选GGUF(或自动) → 4.推理\n模型 [$found]"
+    }
+
+    /** 扫描到多个 gguf 时的选择：Q4_K_M 优先（票 10 速度优化主路线），同档取更大。 */
+    private fun preferredOver(candidate: File, current: File): Boolean {
+        val q4 = "Q4_K_M" in candidate.name
+        val curQ4 = "Q4_K_M" in current.name
+        return when {
+            q4 && !curQ4 -> true
+            !q4 && curQ4 -> false
+            else -> candidate.length() > current.length()
+        }
     }
 
     /** /sdcard/Android/data/<pkg>/files/X.ext → pushDir/X.ext（绕 scoped storage 的 EACCES）。 */
