@@ -8,6 +8,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.File
 import java.nio.FloatBuffer
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
@@ -57,10 +58,12 @@ class OcrEngine(
 
     // ---------- det ----------
 
-    private val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
-    private val std = floatArrayOf(0.229f, 0.224f, 0.225f)
+    // 归一化与桌面 RapidOCR 同款：det/rec 均 (x/255 - 0.5) / 0.5（config.yaml mean/std 0.5）。
+    // 票 04 首版误用 ImageNet 分类参数（0.485/0.229 等），导致 det 概率图偏移、rec 识别错乱。
+    private val mean = floatArrayOf(0.5f, 0.5f, 0.5f)
+    private val std = floatArrayOf(0.5f, 0.5f, 0.5f)
 
-    /** det：限边 960 → 32 倍数 → DB 概率图 → 连通域 AABB。 */
+    /** det：限边 960（max）→ 32 倍数 → DB 概率图 → 连通域 AABB。 */
     private fun detectBoxes(pixels: IntArray, width: Int, height: Int): List<List<List<Float>>> {
         val ratio = 960f / max(width, height)
         val rw = max(32, (width * ratio).toInt())
@@ -139,7 +142,11 @@ class OcrEngine(
             if (count < 3 || (maxX - minX + 1) < 3 || (maxY - minY + 1) < 3) continue
 
             val scale = max(origW / pw.toFloat(), origH / ph.toFloat())
-            val unclip = 1.5f
+            // unclip 与桌面 RapidOCR 同款：offset = unclip_ratio * 面积/周长（1.6）。
+            // 固定 1.5px 太紧会把「天」顶横裁掉识别成「大」。
+            val bw = maxX - minX + 1
+            val bh = maxY - minY + 1
+            val unclip = 1.6f * (bw * bh) / (2f * (bw + bh))
             val x0 = ((minX - unclip) * scale).coerceIn(0f, origW - 1f)
             val y0 = ((minY - unclip) * scale).coerceIn(0f, origH - 1f)
             val x1 = ((maxX + 1 + unclip) * scale).coerceIn(0f, origW - 1f)
@@ -155,22 +162,26 @@ class OcrEngine(
 
     // ---------- rec ----------
 
-    /** 识别一个裁剪块：高归一 48，宽按比例到 32 倍数，CTC decode。 */
+    /**
+     * 识别一个裁剪块：高归一 48，宽按比例（与 RapidOCR resize_norm_img 同款：
+     * resized_w = ceil(48 * w/h)，右侧零填充到 w32）。零填充像素归一化后为 -1。
+     */
     private fun recognize(crop: IntArray, cropW: Int, cropH: Int): Pair<String, Float> {
         if (cropW < 2 || cropH < 2) return "" to 0f
-        val w = max(16, (cropW * 48f / cropH).toInt())
+        val w = max(16, ceil(48f * cropW / cropH).toInt())
         val w32 = ((w + 31) / 32) * 32
         val h48 = 48
-        val resized = resizeTo(crop, cropW, cropH, w32, h48)
+        val resized = resizeTo(crop, cropW, cropH, w, h48)
 
         val input = FloatBuffer.allocate(3 * h48 * w32)
         for (y in 0 until h48) {
             for (x in 0 until w32) {
-                val px = resized[y * w32 + x]
+                // 右侧零填充（对应 RapidOCR padding_im 零矩阵→归一化后 -1），非 replicate
+                val px = if (x < w) resized[y * w + x] else 0xFF000000.toInt()
                 val idx = y * w32 + x
-                input.put(idx, ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0])
-                input.put(h48 * w32 + idx, ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1])
-                input.put(2 * h48 * w32 + idx, ((px and 0xFF) / 255f - mean[2]) / std[2])
+                input.put(idx, if (x < w) ((px shr 16 and 0xFF) / 255f - 0.5f) / 0.5f else -1f)
+                input.put(h48 * w32 + idx, if (x < w) ((px shr 8 and 0xFF) / 255f - 0.5f) / 0.5f else -1f)
+                input.put(2 * h48 * w32 + idx, if (x < w) ((px and 0xFF) / 255f - 0.5f) / 0.5f else -1f)
             }
         }
         val shape = longArrayOf(1, 3, h48.toLong(), w32.toLong())
@@ -222,14 +233,40 @@ class OcrEngine(
         return body.split("\n")
     }
 
-    /** 最近邻缩放（冒烟阶段够用；后续票可换双线性）。 */
+    /**
+     * 双线性缩放（与 cv2.resize 默认 INTER_LINEAR 同款，对齐像素中心）。
+     * 最近邻时商家名行识别错乱（大猫忠贝），双线性后与桌面一致。
+     */
     private fun resizeTo(pixels: IntArray, srcW: Int, srcH: Int, dstW: Int, dstH: Int): IntArray {
         val out = IntArray(dstW * dstH)
+        val xScale = srcW.toFloat() / dstW
+        val yScale = srcH.toFloat() / dstH
         for (y in 0 until dstH) {
-            val sy = min(y * srcH / dstH, srcH - 1)
+            // cv2 对齐像素中心：src = (dst + 0.5) * scale - 0.5
+            val fy = (y + 0.5f) * yScale - 0.5f
+            val sy0 = fy.toInt().coerceIn(0, srcH - 1)
+            val sy1 = min(sy0 + 1, srcH - 1)
+            val wy = (fy - sy0).coerceIn(0f, 1f)
             for (x in 0 until dstW) {
-                val sx = min(x * srcW / dstW, srcW - 1)
-                out[y * dstW + x] = pixels[sy * srcW + sx]
+                val fx = (x + 0.5f) * xScale - 0.5f
+                val sx0 = fx.toInt().coerceIn(0, srcW - 1)
+                val sx1 = min(sx0 + 1, srcW - 1)
+                val wx = (fx - sx0).coerceIn(0f, 1f)
+                val p00 = pixels[sy0 * srcW + sx0]
+                val p10 = pixels[sy0 * srcW + sx1]
+                val p01 = pixels[sy1 * srcW + sx0]
+                val p11 = pixels[sy1 * srcW + sx1]
+                fun lerp(a: Int, b: Int, t: Float) = a + ((b - a) * t).toInt()
+                val r0 = lerp(p00 shr 16 and 0xFF, p10 shr 16 and 0xFF, wx)
+                val r1 = lerp(p01 shr 16 and 0xFF, p11 shr 16 and 0xFF, wx)
+                val r = lerp(r0, r1, wy)
+                val g0 = lerp(p00 shr 8 and 0xFF, p10 shr 8 and 0xFF, wx)
+                val g1 = lerp(p01 shr 8 and 0xFF, p11 shr 8 and 0xFF, wx)
+                val g = lerp(g0, g1, wy)
+                val b0 = lerp(p00 and 0xFF, p10 and 0xFF, wx)
+                val b1 = lerp(p01 and 0xFF, p11 and 0xFF, wx)
+                val b = lerp(b0, b1, wy)
+                out[y * dstW + x] = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b
             }
         }
         return out

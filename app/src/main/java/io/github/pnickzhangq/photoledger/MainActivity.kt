@@ -1,8 +1,9 @@
-// 票 04 冒烟：单 Activity，选图 → OCR 上屏；扫/选 GGUF → 加载 → 一次式推理上屏。
+// 票 04 冒烟 + 票 05 端到端：选图 → OCR；扫 GGUF → 加载；端到端 → Draft 上屏。
 // 并发层用协程（票04 重构）：顺序链路直接顺序写，无轮询无单线程池死锁；
 // CPU 密集（OCR/LLM）走 Dispatchers.Default，Activity 销毁由 lifecycleScope 自动取消。
 package io.github.pnickzhangq.photoledger
 
+import android.app.ActivityManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -13,9 +14,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.lifecycleScope
+import io.github.pnickzhangq.photoledger.ocr.ExtractResult
+import io.github.pnickzhangq.photoledger.ocr.JniLlmTransport
 import io.github.pnickzhangq.photoledger.ocr.LlamaNative
 import io.github.pnickzhangq.photoledger.ocr.OcrEngine
 import io.github.pnickzhangq.photoledger.ocr.OcrLine
+import io.github.pnickzhangq.photoledger.ocr.OnDevicePipeline
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -26,6 +30,11 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "photoledger-smoke"
+        // 票 05 验收：内存门槛。0.6B Q8_0 峰值 ~0.7GB + OCR ~20MB + Kotlin/Compose 运行时 ~0.3GB，
+        // 2GB 可用即安全；真机 11.7GB 正常空闲 4-6GB（实测 4.6GB 被旧门槛误拒）。
+        private const val MIN_AVAILABLE_MB = 2048L
+        // 与桌面 CLI DEFAULT_CATEGORIES 同源（零分叉）；后续票 08 类别体系时迁移共享常量
+        private val CATEGORIES = listOf("餐饮", "购物", "交通", "居住", "医疗", "娱乐", "通讯", "其他")
     }
 
     /** 开发期模型目录（票04）：adb push 到 App 专属外部目录。必须用 getExternalFilesDir()
@@ -35,9 +44,10 @@ class MainActivity : ComponentActivity() {
         get() = getExternalFilesDir(null) ?: filesDir
 
     // ---- UI 状态（Compose mutableStateOf）----
-    private val status = mutableStateOf("票04冒烟：1.选截图 → 2.OCR → 3.选GGUF → 4.推理")
+    private val status = mutableStateOf("照片记账（票05端到端）：1.选截图 → 2.OCR → 3.选GGUF → 4.推理 → 5.端到端")
     private val ocrResult = mutableStateOf("")
     private val llmResult = mutableStateOf("")
+    private val e2eResult = mutableStateOf("")
     private val imageReady = mutableStateOf(false)
     private val llmReadyState = mutableStateOf(false)
 
@@ -63,17 +73,25 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         scanModelDir()
 
-        // 开发期冒烟入口（票04）：am start --es smoke_image <路径> [--ez smoke_llm true]
-        // 顺序执行 OCR → (可选)LLM，结果全部落 logcat（SMOKE_*），不依赖读屏。
+        // 开发期冒烟入口（票04/05）：
+        //   --es smoke_image <路径> [--ez smoke_llm true] [--ez smoke_e2e true]
+        // 结果全部落 logcat（SMOKE_*），不依赖读屏。
         val smokeImage = intent?.getStringExtra("smoke_image")
         val smokeLlm = intent?.getBooleanExtra("smoke_llm", false) ?: false
+        val smokeE2e = intent?.getBooleanExtra("smoke_e2e", false) ?: false
         if (smokeImage != null) {
             lifecycleScope.launch {
                 loadBitmap(resolveUnderPushDir(smokeImage))?.let { px ->
-                    val lines = runOcr(px)
-                    if (smokeLlm && lines != null) {
+                    if (smokeE2e) {
+                        // 端到端一条链：加载模型 → OCR+后处理+GBNF 提取 → Draft
                         val ok = loadLlm()
-                        if (ok) runLlm()
+                        if (ok) runE2e(px)
+                    } else {
+                        val lines = runOcr(px)
+                        if (smokeLlm && lines != null) {
+                            val ok = loadLlm()
+                            if (ok) runLlm()
+                        }
                     }
                 }
             }
@@ -85,12 +103,14 @@ class MainActivity : ComponentActivity() {
                     status = status.value,
                     ocrResult = ocrResult.value,
                     llmResult = llmResult.value,
+                    e2eResult = e2eResult.value,
                     imageReady = imageReady.value,
                     llmReady = llmReadyState.value,
                     onPickImage = { pickImage.launch("image/*") },
                     onOcr = { lifecycleScope.launch { runOcr(lastPixels) } },
                     onPickModel = { pickModel.launch("*/*") },
                     onLlm = { lifecycleScope.launch { runLlm() } },
+                    onE2e = { lifecycleScope.launch { runE2e(lastPixels) } },
                 )
             }
         }
@@ -213,6 +233,71 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             Log.e(TAG, "llm failed", t)
             status.value = "推理失败：${t.message}"
+        }
+    }
+
+    // ---- 票 05 端到端：截图 → Draft ----
+
+    /** 内存门槛检查（票 05 验收）：可用 RAM 低于门槛报错而非加载后进低内存范围。 */
+    private fun checkMemoryGate(): Boolean {
+        val am = getSystemService(ActivityManager::class.java)
+        val mi = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val availMb = mi.availMem / (1024L * 1024L)
+        Log.i(TAG, "SMOKE_E2E_MEM availableMb=$availMb thresholdMb=$MIN_AVAILABLE_MB")
+        if (availMb < MIN_AVAILABLE_MB) {
+            status.value = "可用内存 ${availMb}MB 低于 ${MIN_AVAILABLE_MB}MB 门槛，" +
+                "无法安全运行端侧提取（需要 ~1GB 模型内存）"
+            Log.e(TAG, "SMOKE_E2E_REJECTED low memory ${availMb}MB")
+            return false
+        }
+        return true
+    }
+
+    /**
+     * 端到端提取：内存 gate → (模型未加载则先加载) → 共享引擎 OCR 路线 → Draft 上屏。
+     * 分段耗时与 Draft 字段全部落 logcat（SMOKE_E2E_*）。
+     */
+    private suspend fun runE2e(pixels: IntArray?): Unit = withContext(Dispatchers.Default) {
+        if (pixels == null) {
+            status.value = "先 1.选截图"
+            return@withContext
+        }
+        if (!checkMemoryGate()) return@withContext
+        if (!llmReady || ctxPtr == 0L) {
+            val ok = loadLlm()
+            if (!ok) return@withContext
+        }
+
+        val engine = ocrEngine ?: OcrEngine(
+            detModel = File(detPath ?: return@withContext.also { status.value = "缺 det.onnx" }),
+            recModel = File(recPath ?: return@withContext.also { status.value = "缺 rec.onnx" }),
+            clsModel = clsPath?.let(::File),
+            threads = 4,
+        ).also { ocrEngine = it }
+
+        status.value = "端到端提取中（OCR+推理约 1-2 分钟）…"
+        val pipeline = OnDevicePipeline(engine, JniLlmTransport({ ctxPtr }), CATEGORIES)
+        val t0 = System.currentTimeMillis()
+        when (val r = pipeline.extract(pixels, lastW, lastH, fallbackYear = java.time.Year.now().value)) {
+            is ExtractResult.Success -> {
+                val total = System.currentTimeMillis() - t0
+                val times = r.times
+                Log.i(TAG, "SMOKE_E2E_OK drafts=${r.drafts.size} ocrMs=${times.ocrMs} postMs=${times.postMs} llmMs=${times.llmMs} totalMs=$total")
+                r.drafts.forEachIndexed { i, d ->
+                    Log.i(TAG, "SMOKE_E2E_DRAFT[$i] datePaid=${d.datePaid} amount=${d.amountPaid} merchant=${d.merchant} category=${d.category}")
+                }
+                e2eResult.value = r.drafts.joinToString("\n\n") { d ->
+                    "✅ ${d.datePaid}\n¥${d.amountPaid}  ${d.category}\n${d.merchant}"
+                }
+                status.value = "端到端完成：${r.drafts.size} 单，" +
+                    "OCR ${times.ocrMs}ms / LLM ${times.llmMs}ms"
+            }
+            is ExtractResult.Failure -> {
+                Log.e(TAG, "SMOKE_E2E_FAIL reason=${r.reason}")
+                e2eResult.value = "❌ ${r.reason}"
+                status.value = "端到端失败（见下方原因）"
+            }
         }
     }
 

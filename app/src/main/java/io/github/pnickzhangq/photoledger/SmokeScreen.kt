@@ -1,4 +1,4 @@
-// 票 04 冒烟界面：三个按钮 + 滚动日志区。
+// 票 04/05 冒烟与端到端界面：按钮组 + 滚动结果区。
 package io.github.pnickzhangq.photoledger
 
 import androidx.compose.foundation.layout.Arrangement
@@ -21,12 +21,14 @@ fun SmokeScreen(
     status: String,
     ocrResult: String,
     llmResult: String,
+    e2eResult: String,
     imageReady: Boolean,
     llmReady: Boolean,
     onPickImage: () -> Unit,
     onPickModel: () -> Unit,
     onOcr: () -> Unit,
     onLlm: () -> Unit,
+    onE2e: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -43,11 +45,18 @@ fun SmokeScreen(
             Button(onClick = onPickModel, enabled = true) { Text("3.选GGUF") }
             Button(onClick = onLlm, enabled = llmReady) { Text("4.推理") }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onE2e, enabled = imageReady) { Text("5.端到端→Draft") }
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
         ) {
+            if (e2eResult.isNotBlank()) {
+                Text("── Draft ──", style = MaterialTheme.typography.labelLarge)
+                Text(e2eResult, style = MaterialTheme.typography.bodyMedium)
+            }
             if (ocrResult.isNotBlank()) {
                 Text("── OCR ──", style = MaterialTheme.typography.labelLarge)
                 Text(ocrResult, style = MaterialTheme.typography.bodySmall)
