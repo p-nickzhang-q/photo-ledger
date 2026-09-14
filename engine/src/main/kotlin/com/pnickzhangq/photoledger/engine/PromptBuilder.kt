@@ -28,8 +28,6 @@ object PromptBuilder {
     /**
      * OCR 文本行版（票 12）：输入是后处理层整理过的素材而非原始截图。
      * 口径要求与图像版完全一致；额外给出规范化日期/金额清单作锚点。
-     * 票 10 速度优化：字段说明压缩到单行——端侧 prefill 是耗时大头
-     * （410 token 中说明占 ~250），质量闸门复验通过后保留压缩版。
      */
     fun buildFromOcr(
         categories: List<String>,
@@ -37,17 +35,28 @@ object PromptBuilder {
         normalizedDates: List<String>,
         amounts: List<Double>,
     ): String = buildString {
-        appendLine("订单截图的 OCR 文本行（可能有错字或无关内容）：")
+        appendLine("以下是从一张订单截图 OCR 识别并整理出的文本行（自上而下、自左而右，可能有错字或无关内容）：")
         appendLine(ocrText)
         if (normalizedDates.isNotEmpty()) {
-            appendLine("规范化日期（datePaid 逐字取自清单，不要自拼）：${normalizedDates.joinToString("、")}")
+            appendLine()
+            appendLine("图中出现过的规范化日期（datePaid 必须逐字取自这个清单中的一项，不要自己拼日期）：${normalizedDates.joinToString("、")}")
         } else {
-            appendLine("无可识别日期。datePaid 用空字符串。")
+            appendLine()
+            appendLine("图中没有可识别的完整日期。datePaid 用空字符串，dateSource 仍按口径标注。")
         }
         if (amounts.isNotEmpty()) {
-            appendLine("金额数字（参考）：${amounts.joinToString("、")}")
+            appendLine("图中出现过的金额数字（供参考）：${amounts.joinToString("、")}")
         }
-        appendLine("提取为 JSON：merchant 取店铺名而非平台名（如「闪购」「淘宝」是反例）；amountPaid 取「实付款/实付」后的数字；currency 人民币为 CNY；datePaid 优先付款时间否则下单时间；dateSource 填 payment_time 或 order_time；orderStatus 取状态原文；category 从中选择：${categories.joinToString("、")}")
-        appendLine("只输出 JSON。")
+        appendLine()
+        appendLine("请提取为 JSON。字段说明：")
+        appendLine("- merchant: 商家或店铺名称。优先取店铺名（如「如意馄饨·干拌面光福店」），不要填平台或频道名（如「闪购」「淘宝」）")
+        appendLine("- amountPaid: 实付款金额，取「实付款/实付」后紧跟的数字，不要商品单价、运费或优惠前价格")
+        appendLine("- currency: 币种代码，人民币为 CNY")
+        appendLine("- datePaid: 支付发生的时间。优先取付款时间；没有付款时间时取下单时间。必须逐字取自上方日期清单（存在清单时）")
+        appendLine("- dateSource: datePaid 的口径标注。取了付款时间填 payment_time，取了下单时间填 order_time")
+        appendLine("- orderStatus: 订单状态原文（如「已完成」「商家备餐中」「交易成功」）")
+        appendLine("- category: 必须从以下类别中选一个：${categories.joinToString("、")}")
+        appendLine()
+        appendLine("只输出 JSON，不要任何解释或 markdown 标记。")
     }
 }
