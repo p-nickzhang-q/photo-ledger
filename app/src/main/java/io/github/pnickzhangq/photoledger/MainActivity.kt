@@ -1,9 +1,10 @@
-// 票 04 冒烟 + 票 05 端到端：选图 → OCR；扫 GGUF → 加载；端到端 → Draft 上屏。
-// 并发层用协程（票04 重构）：顺序链路直接顺序写，无轮询无单线程池死锁；
-// CPU 密集（OCR/LLM）走 Dispatchers.Default，Activity 销毁由 lifecycleScope 自动取消。
+// 票 04 冒烟 + 票 05 端到端 + 票 06 账目库与确认流。
+// 界面导航：流水列表（主体）→ Draft 确认 / Entry 详情 / 手工新增；冒烟工具页保留为开发入口。
+// 并发层协程（票04 重构）：CPU 密集（OCR/LLM）走 Dispatchers.Default，销毁由 lifecycleScope 取消。
 package io.github.pnickzhangq.photoledger
 
 import android.app.ActivityManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -11,58 +12,100 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import io.github.pnickzhangq.photoledger.data.Entry
+import io.github.pnickzhangq.photoledger.data.LedgerDatabase
+import io.github.pnickzhangq.photoledger.data.LedgerRepository
+import io.github.pnickzhangq.photoledger.data.PhotoStore
 import io.github.pnickzhangq.photoledger.ocr.ExtractResult
 import io.github.pnickzhangq.photoledger.ocr.JniLlmTransport
 import io.github.pnickzhangq.photoledger.ocr.LlamaNative
 import io.github.pnickzhangq.photoledger.ocr.OcrEngine
 import io.github.pnickzhangq.photoledger.ocr.OcrLine
 import io.github.pnickzhangq.photoledger.ocr.OnDevicePipeline
+import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
+import io.github.pnickzhangq.photoledger.ui.DraftForm
+import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
+import io.github.pnickzhangq.photoledger.ui.EntryForm
+import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
+import io.github.pnickzhangq.photoledger.ui.ManualEntryScreen
+import com.pnickzhangq.photoledger.engine.Draft
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+/** 页面导航（无路由库，sealed class 足够本规模）。 */
+private sealed class Page {
+    data object Ledger : Page()
+    data object ManualAdd : Page()
+    data class Confirm(val draft: Draft, val photoPath: String?) : Page()
+    data class Detail(val entryId: Long) : Page()
+    data object SmokeTools : Page()
+}
 
 class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "photoledger-smoke"
-        // 票 05 验收：内存门槛。0.6B Q8_0 峰值 ~0.7GB + OCR ~20MB + Kotlin/Compose 运行时 ~0.3GB，
-        // 2GB 可用即安全；真机 11.7GB 正常空闲 4-6GB（实测 4.6GB 被旧门槛误拒）。
+        // 票 05 验收：内存门槛。0.6B Q4_K_M 峰值 ~0.5GB + OCR ~20MB + 运行时 ~0.3GB。
         private const val MIN_AVAILABLE_MB = 2048L
-        // 与桌面 CLI DEFAULT_CATEGORIES 同源（零分叉）；后续票 08 类别体系时迁移共享常量
+        // 与桌面 CLI DEFAULT_CATEGORIES 同源（零分叉）；票 08 类别体系时迁移共享常量
         private val CATEGORIES = listOf("餐饮", "购物", "交通", "居住", "医疗", "娱乐", "通讯", "其他")
     }
 
-    /** 开发期模型目录（票04）：adb push 到 App 专属外部目录。必须用 getExternalFilesDir()
-     *  取路径——硬编码 /sdcard/Android/data/... 会被 scoped storage 拒（EACCES），
-     *  而同一路径经 API 返回的 File 对 App 有完整读写权。 */
+    /** 开发期模型目录（票04）：adb push 到 App 专属外部目录。 */
     private val pushDir: File
         get() = getExternalFilesDir(null) ?: filesDir
 
-    // ---- UI 状态（Compose mutableStateOf）----
-    private val status = mutableStateOf("照片记账（票05端到端）：1.选截图 → 2.OCR → 3.选GGUF → 4.推理 → 5.端到端")
+    // ---- 账目库 ----
+    private lateinit var repo: LedgerRepository
+    private val page = mutableStateOf<Page>(Page.Ledger)
+
+    // ---- 冒烟 UI 状态 ----
+    private val status = mutableStateOf("工具页：选图/OCR/推理（票04/05 冒烟入口）")
     private val ocrResult = mutableStateOf("")
     private val llmResult = mutableStateOf("")
     private val e2eResult = mutableStateOf("")
     private val imageReady = mutableStateOf(false)
     private val llmReadyState = mutableStateOf(false)
 
-    // ---- 已载入的图 ----
+    // ---- 已载入的图（冒烟/提取共用）----
     private var lastPixels: IntArray? = null
     private var lastW = 0
     private var lastH = 0
+    private var lastPhotoBytes: ByteArray? = null   // 确认入账时的原图（SAF 读入）
+    private var lastPhotoPath: String? = null       // 冒烟 intent 场景的原图路径
 
-    // ---- 模型路径（onCreate 扫描）----
+    // ---- 模型路径 ----
     private var detPath: String? = null
     private var recPath: String? = null
     private var clsPath: String? = null
     private var ggufPath: String? = null
 
-    // ---- 引擎与句柄（Default 线程访问）----
+    // ---- 引擎与句柄 ----
     private var ocrEngine: OcrEngine? = null
     private var modelPtr = 0L
     private var ctxPtr = 0L
@@ -71,19 +114,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        repo = LedgerRepository(
+            LedgerDatabase.get(this).entryDao(),
+            PhotoStore(File(filesDir, "ledger")),
+        )
         scanModelDir()
 
-        // 开发期冒烟入口（票04/05）：
-        //   --es smoke_image <路径> [--ez smoke_llm true] [--ez smoke_e2e true]
-        // 结果全部落 logcat（SMOKE_*），不依赖读屏。
+        // 开发期冒烟入口（票04/05）：结果落 logcat（SMOKE_*），不依赖读屏。
         val smokeImage = intent?.getStringExtra("smoke_image")
         val smokeLlm = intent?.getBooleanExtra("smoke_llm", false) ?: false
         val smokeE2e = intent?.getBooleanExtra("smoke_e2e", false) ?: false
         if (smokeImage != null) {
             lifecycleScope.launch {
                 loadBitmap(resolveUnderPushDir(smokeImage))?.let { px ->
+                    lastPhotoPath = resolveUnderPushDir(smokeImage)
                     if (smokeE2e) {
-                        // 端到端一条链：加载模型 → OCR+后处理+GBNF 提取 → Draft
                         val ok = loadLlm()
                         if (ok) runE2e(px)
                     } else {
@@ -99,29 +144,141 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                SmokeScreen(
-                    status = status.value,
-                    ocrResult = ocrResult.value,
-                    llmResult = llmResult.value,
-                    e2eResult = e2eResult.value,
-                    imageReady = imageReady.value,
-                    llmReady = llmReadyState.value,
-                    onPickImage = { pickImage.launch("image/*") },
-                    onOcr = { lifecycleScope.launch { runOcr(lastPixels) } },
-                    onPickModel = { pickModel.launch("*/*") },
-                    onLlm = { lifecycleScope.launch { runLlm() } },
-                    onE2e = { lifecycleScope.launch { runE2e(lastPixels) } },
-                )
+                AppScaffold()
             }
         }
     }
 
-    // ---- 冒烟链路（协程，全部在 Dispatchers.Default 上跑 CPU/IO）----
+    // ---- 顶层脚手架：列表页带 FAB（手工新增）+ 工具入口 ----
 
-    /** 读图并置 UI 状态；失败返回 null。 */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @androidx.compose.runtime.Composable
+    private fun AppScaffold() {
+        val current = page.value
+        val entries by repo.entries.collectAsState(initial = emptyList())
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("照片记账") },
+                    actions = {
+                        IconButton(onClick = {
+                            page.value = if (current is Page.SmokeTools) Page.Ledger else Page.SmokeTools
+                        }) {
+                            Icon(Icons.Filled.Settings, contentDescription = "工具")
+                        }
+                    },
+                )
+            },
+            floatingActionButton = {
+                if (current is Page.Ledger) {
+                    FloatingActionButton(onClick = { page.value = Page.ManualAdd }) {
+                        Icon(Icons.Filled.Add, contentDescription = "手工记账")
+                    }
+                }
+            },
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                when (val p = current) {
+                    is Page.Ledger -> LedgerListScreen(
+                        entries = entries,
+                        thumbDir = File(File(filesDir, "ledger"), "thumbs"),
+                        emptyHint = "还没有账目\n\n右上角「工具」里跑端到端提取，\n或点右下角 ➕ 手工记账",
+                        onEntryClick = { page.value = Page.Detail(it.id) },
+                    )
+                    is Page.ManualAdd -> ManualEntryScreen(
+                        categories = CATEGORIES,
+                        onSave = { form -> lifecycleScope.launch { saveManual(form) } },
+                        onCancel = { page.value = Page.Ledger },
+                    )
+                    is Page.Confirm -> DraftConfirmScreen(
+                        draft = p.draft,
+                        photoPath = p.photoPath,
+                        categories = CATEGORIES,
+                        onConfirm = { form -> lifecycleScope.launch { confirmDraft(p, form) } },
+                        onDiscard = { repo.discard(); page.value = Page.Ledger },
+                    )
+                    is Page.Detail -> {
+                        val entry = entries.firstOrNull { it.id == p.entryId }
+                        if (entry == null) {
+                            Text("账目不存在（已删除？）", Modifier.padding(16.dp))
+                            OutlinedButton(onClick = { page.value = Page.Ledger }, Modifier.padding(16.dp)) { Text("返回") }
+                        } else {
+                            EntryEditScreen(
+                                entry = entry,
+                                photoDir = File(File(filesDir, "ledger"), "photos"),
+                                categories = CATEGORIES,
+                                onSave = { form -> lifecycleScope.launch { saveEdit(entry, form) } },
+                                onDelete = { alsoPhoto -> lifecycleScope.launch { repo.delete(entry, alsoPhoto); page.value = Page.Ledger } },
+                            )
+                        }
+                    }
+                    is Page.SmokeTools -> SmokeScreen(
+                        status = status.value,
+                        ocrResult = ocrResult.value,
+                        llmResult = llmResult.value,
+                        e2eResult = e2eResult.value,
+                        imageReady = imageReady.value,
+                        llmReady = llmReadyState.value,
+                        onPickImage = { pickImage.launch("image/*") },
+                        onOcr = { lifecycleScope.launch { runOcr(lastPixels) } },
+                        onPickModel = { pickModel.launch("*/*") },
+                        onLlm = { lifecycleScope.launch { runLlm() } },
+                        onE2e = { lifecycleScope.launch { runE2e(lastPixels) } },
+                    )
+                }
+            }
+        }
+    }
+
+    // ---- 确认流（票 06）----
+
+    private suspend fun confirmDraft(p: Page.Confirm, form: DraftForm) {
+        repo.confirm(
+            draft = p.draft,
+            editedMerchant = form.merchant,
+            editedAmount = form.amountPaid.toDoubleOrNull() ?: 0.0,
+            editedDate = form.datePaid,
+            editedCategory = form.category,
+            editedOrderStatus = form.orderStatus,
+            photoBytes = lastPhotoBytes,
+        )
+        lastPhotoBytes = null
+        page.value = Page.Ledger
+    }
+
+    private suspend fun saveManual(form: EntryForm) {
+        repo.addManual(
+            merchant = form.merchant,
+            amountPaid = form.amountPaid.toDoubleOrNull() ?: 0.0,
+            datePaid = form.datePaid,
+            category = form.category,
+            orderStatus = form.orderStatus,
+        )
+        page.value = Page.Ledger
+    }
+
+    private suspend fun saveEdit(entry: Entry, form: EntryForm) {
+        repo.edit(entry) {
+            copy(
+                merchant = form.merchant,
+                amountPaid = form.amountPaid.toDoubleOrNull() ?: 0.0,
+                datePaid = form.datePaid,
+                category = form.category,
+                orderStatus = form.orderStatus,
+            )
+        }
+        page.value = Page.Ledger
+    }
+
+    // ---- 冒烟链路（票04/05，协程）----
+
+    /** 读图并置 UI 状态；失败返回 null。SAF 源同时保留原始字节供入账。 */
     private suspend fun loadBitmap(path: String): IntArray? = withContext(Dispatchers.IO) {
         try {
-            val bmp = BitmapFactory.decodeFile(path)
+            val bytes = File(path).readBytes()
+            lastPhotoBytes = bytes
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 ?: run {
                     status.value = "解码失败：$path"
                     return@withContext null
@@ -159,16 +316,11 @@ class MainActivity : ComponentActivity() {
                 val t0 = System.currentTimeMillis()
                 val lines = engine.run(pixels, lastW, lastH)
                 val ms = System.currentTimeMillis() - t0
-                val text = if (lines.isEmpty()) "(no lines)" else lines.joinToString("\n") {
+                ocrResult.value = if (lines.isEmpty()) "(no lines)" else lines.joinToString("\n") {
                     "(${it.box[0][0].toInt()},${it.box[0][1].toInt()}) [${"%.2f".format(it.score)}] ${it.text}"
                 }
-                ocrResult.value = text
                 status.value = "OCR 完成：${lines.size} 行，${ms}ms"
-                // 冒烟验证信号（票04）：结果落 logcat，不依赖读屏
                 Log.i(TAG, "SMOKE_OCR_OK lines=${lines.size} ms=$ms")
-                for ((i, l) in lines.withIndex()) {
-                    Log.i(TAG, "SMOKE_OCR_LINE[$i] box=(${l.box[0][0].toInt()},${l.box[0][1].toInt()}) score=${"%.2f".format(l.score)} text=${l.text}")
-                }
                 lines
             } catch (t: Throwable) {
                 Log.e(TAG, "ocr failed", t)
@@ -196,7 +348,6 @@ class MainActivity : ComponentActivity() {
                 val t0 = System.currentTimeMillis()
                 LlamaNative.backendInit()
                 modelPtr = LlamaNative.loadModel(src)
-                // 线程数对照实验：默认 0（JNI 内推 4）。崩在 threads=4，threads=6 历史稳定。
                 ctxPtr = LlamaNative.newContext(modelPtr, nCtx = 2048, nThreads = 6)
                 llmReady = true
                 val ms = System.currentTimeMillis() - t0
@@ -212,34 +363,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 一次式推理；结果写 UI/logcat。 */
-    private suspend fun runLlm(): Unit = withContext(Dispatchers.Default) {
+    private suspend fun runLlm() {
         if (!llmReady || ctxPtr == 0L) {
-            status.value = "先 3.选GGUF 加载模型"
-            return@withContext
+            status.value = "先 3.选GGUF 加载"
+            return
         }
-        status.value = "推理运行中…"
-        try {
-            val t0 = System.currentTimeMillis()
-            val out = LlamaNative.complete(
-                ctx = ctxPtr,
-                prompt = "问：1+1=?\n答：",
-                grammar = "",
-                nLen = 32,
-            )
-            val ms = System.currentTimeMillis() - t0
-            Log.i(TAG, "SMOKE_LLM_OK ms=$ms output=$out")
-            llmResult.value = out.ifBlank { "(empty)" }
-            status.value = "推理完成 ${ms}ms"
-        } catch (t: Throwable) {
-            Log.e(TAG, "llm failed", t)
-            status.value = "推理失败：${t.message}"
+        status.value = "推理中（约 1 分钟）…"
+        withContext(Dispatchers.Default) {
+            try {
+                val t0 = System.currentTimeMillis()
+                val out = LlamaNative.complete(ctxPtr, prompt = "1+1=", grammar = "", nLen = 64)
+                val ms = System.currentTimeMillis() - t0
+                llmResult.value = out
+                status.value = "推理完成 ${ms}ms"
+                Log.i(TAG, "SMOKE_LLM_OK ms=$ms out=${out.take(80)}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "llm failed", t)
+                status.value = "推理失败：${t.message}"
+            }
         }
     }
 
-    // ---- 票 05 端到端：截图 → Draft ----
-
-    /** 内存门槛检查（票 05 验收）：可用 RAM 低于门槛报错而非加载后进低内存范围。 */
     private fun checkMemoryGate(): Boolean {
         val am = getSystemService(ActivityManager::class.java)
         val mi = android.app.ActivityManager.MemoryInfo()
@@ -247,8 +391,7 @@ class MainActivity : ComponentActivity() {
         val availMb = mi.availMem / (1024L * 1024L)
         Log.i(TAG, "SMOKE_E2E_MEM availableMb=$availMb thresholdMb=$MIN_AVAILABLE_MB")
         if (availMb < MIN_AVAILABLE_MB) {
-            status.value = "可用内存 ${availMb}MB 低于 ${MIN_AVAILABLE_MB}MB 门槛，" +
-                "无法安全运行端侧提取（需要 ~1GB 模型内存）"
+            status.value = "可用内存 ${availMb}MB 低于 ${MIN_AVAILABLE_MB}MB 门槛，无法安全运行端侧提取"
             Log.e(TAG, "SMOKE_E2E_REJECTED low memory ${availMb}MB")
             return false
         }
@@ -256,8 +399,8 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 端到端提取：内存 gate → (模型未加载则先加载) → 共享引擎 OCR 路线 → Draft 上屏。
-     * 分段耗时与 Draft 字段全部落 logcat（SMOKE_E2E_*）。
+     * 端到端提取（票 05）：内存 gate → 共享引擎管线 → Draft。
+     * 成功后进确认界面（票 06 确认流），不再直接展示结果。
      */
     private suspend fun runE2e(pixels: IntArray?): Unit = withContext(Dispatchers.Default) {
         if (pixels == null) {
@@ -277,7 +420,7 @@ class MainActivity : ComponentActivity() {
             threads = 4,
         ).also { ocrEngine = it }
 
-        status.value = "端到端提取中（OCR+推理约 1-2 分钟）…"
+        status.value = "端到端提取中（约 3-4 分钟）…"
         val pipeline = OnDevicePipeline(engine, JniLlmTransport({ ctxPtr }), CATEGORIES)
         val t0 = System.currentTimeMillis()
         when (val r = pipeline.extract(pixels, lastW, lastH, fallbackYear = java.time.Year.now().value)) {
@@ -285,14 +428,29 @@ class MainActivity : ComponentActivity() {
                 val total = System.currentTimeMillis() - t0
                 val times = r.times
                 Log.i(TAG, "SMOKE_E2E_OK drafts=${r.drafts.size} ocrMs=${times.ocrMs} postMs=${times.postMs} llmMs=${times.llmMs} totalMs=$total")
-                r.drafts.forEachIndexed { i, d ->
-                    Log.i(TAG, "SMOKE_E2E_DRAFT[$i] datePaid=${d.datePaid} amount=${d.amountPaid} merchant=${d.merchant} category=${d.category}")
+                when {
+                    r.drafts.isEmpty() -> {
+                        e2eResult.value = "识别到文本但未找到订单块"
+                        status.value = "未找到订单（无实付款特征）"
+                    }
+                    r.drafts.size == 1 -> {
+                        // 单 Draft → 直接进确认界面（票 06）
+                        val d = r.drafts[0]
+                        Log.i(TAG, "SMOKE_E2E_DRAFT[0] datePaid=${d.datePaid} amount=${d.amountPaid} merchant=${d.merchant} category=${d.category}")
+                        e2eResult.value = "✅ ${d.datePaid}\n¥${d.amountPaid}  ${d.category}\n${d.merchant}"
+                        page.value = Page.Confirm(d, lastPhotoPath)
+                        status.value = "提取完成，请确认入账"
+                    }
+                    else -> {
+                        // 多 Draft（一图多单）：v1 取第一单进确认，其余留日志（票 07 队列细化）
+                        val d = r.drafts[0]
+                        r.drafts.forEachIndexed { i, dd ->
+                            Log.i(TAG, "SMOKE_E2E_DRAFT[$i] datePaid=${dd.datePaid} amount=${dd.amountPaid} merchant=${dd.merchant} category=${dd.category}")
+                        }
+                        e2eResult.value = "共 ${r.drafts.size} 单，第一单待确认（其余见 logcat）"
+                        page.value = Page.Confirm(d, lastPhotoPath)
+                    }
                 }
-                e2eResult.value = r.drafts.joinToString("\n\n") { d ->
-                    "✅ ${d.datePaid}\n¥${d.amountPaid}  ${d.category}\n${d.merchant}"
-                }
-                status.value = "端到端完成：${r.drafts.size} 单，" +
-                    "OCR ${times.ocrMs}ms / LLM ${times.llmMs}ms"
             }
             is ExtractResult.Failure -> {
                 Log.e(TAG, "SMOKE_E2E_FAIL reason=${r.reason}")
@@ -307,7 +465,7 @@ class MainActivity : ComponentActivity() {
     private fun scanModelDir() {
         val dir = pushDir
         if (!dir.isDirectory) {
-            status.value = "票04冒烟：模型目录不存在\n${dir.absolutePath}\n(先 adb push)"
+            status.value = "模型目录不存在\n${dir.absolutePath}\n(先 adb push)"
             return
         }
         var gguf: File? = null
@@ -320,8 +478,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         ggufPath = gguf?.absolutePath
-        val found = "det=${detPath != null} rec=${recPath != null} cls=${clsPath != null} gguf=${gguf != null}"
-        status.value = "票04冒烟：1.选截图 → 2.OCR → 3.选GGUF(或自动) → 4.推理\n模型 [$found]"
     }
 
     /** 扫描到多个 gguf 时的选择：Q4_K_M 优先（票 10 速度优化主路线），同档取更大。 */
@@ -349,23 +505,27 @@ class MainActivity : ComponentActivity() {
             if (uri == null) return@registerForActivityResult
             lifecycleScope.launch {
                 try {
-                    // SAF URI 经 contentResolver 读流（IO），不落盘
-                    val px = withContext(Dispatchers.IO) {
-                        val bmp = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-                        bmp?.let {
-                            val p = IntArray(it.width * it.height)
-                            it.getPixels(p, 0, it.width, 0, 0, it.width, it.height)
-                            lastW = it.width; lastH = it.height
-                            it.recycle()
-                            p
+                    // SAF URI 读原始字节（入账原图）+ 解码像素（OCR 输入）
+                    withContext(Dispatchers.IO) {
+                        val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        if (bytes == null) {
+                            status.value = "读图失败"
+                            return@withContext
                         }
-                    }
-                    if (px == null) {
-                        status.value = "解码失败"
-                    } else {
-                        lastPixels = px
+                        lastPhotoBytes = bytes
+                        lastPhotoPath = null  // SAF 源无文件路径，入账走字节流
+                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bmp == null) {
+                            status.value = "解码失败"
+                            return@withContext
+                        }
+                        val p = IntArray(bmp.width * bmp.height)
+                        bmp.getPixels(p, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+                        lastW = bmp.width; lastH = bmp.height
+                        bmp.recycle()
+                        lastPixels = p
                         imageReady.value = true
-                        status.value = "图就绪 ${lastW}x${lastH}，点 2.OCR"
+                        status.value = "图就绪 ${lastW}x${lastH}，点 2.OCR 或 5.端到端"
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "decode image failed", t)
@@ -376,9 +536,6 @@ class MainActivity : ComponentActivity() {
 
     private val pickModel =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-            // 已自动扫到 gguf（adb push 到 App 专属目录）时直接加载。
-            // SAF 兜底：content:// URI 经 openFileDescriptor 拿 fd，/proc/self/fd/N 即真实路径，
-            // llama.cpp 直接 mmap，零复制（持有 pfd 引用防 fd 被 GC 关闭）。
             when {
                 llmReady || ggufPath != null -> lifecycleScope.launch { loadLlm(ggufPath) }
                 uri != null -> {
@@ -398,7 +555,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // lifecycleScope 已随销毁取消；native 句柄在主线程释放（进程即将退出，与 Default 竞争窗口可接受——冒烟阶段）
         runCatching { ocrEngine?.close() }
         if (ctxPtr != 0L) runCatching { LlamaNative.freeContext(ctxPtr) }
         if (modelPtr != 0L) runCatching { LlamaNative.freeModel(modelPtr) }

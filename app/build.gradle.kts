@@ -71,5 +71,20 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
 
+    // 票 06：列表/确认界面图片加载（缩略图与原图对照）
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
+    // 票 06：账目库（Room schema 在本票定型）
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
+    // S3 接缝测试：JVM + Room 内存库（Robolectric 是 JUnit4 runner，须用 junit4）
+    testImplementation(libs.junit4)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.room.testing)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.robolectric)
 }
