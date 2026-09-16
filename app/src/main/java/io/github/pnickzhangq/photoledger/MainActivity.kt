@@ -4,6 +4,7 @@
 package io.github.pnickzhangq.photoledger
 
 import android.app.ActivityManager
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -105,6 +106,8 @@ class MainActivity : ComponentActivity() {
     private var recPath: String? = null
     private var clsPath: String? = null
     private var ggufPath: String? = null
+    private var litertBackendOverride: String? = null  // 票 14：smoke intent 传 cpu/gpu 强制后端（A/B 对照）
+    private var litertlmPath: String? = null
 
     // ---- 引擎与句柄 ----
     private var ocrEngine: OcrEngine? = null
@@ -121,36 +124,47 @@ class MainActivity : ComponentActivity() {
         )
         scanModelDir()
 
-        // 开发期冒烟入口（票04/05）：结果落 logcat（SMOKE_*），不依赖读屏。
-        val smokeImage = intent?.getStringExtra("smoke_image")
-        val smokeLlm = intent?.getBooleanExtra("smoke_llm", false) ?: false
-        val smokeE2e = intent?.getBooleanExtra("smoke_e2e", false) ?: false
-        val smokeE2eLitert = intent?.getBooleanExtra("smoke_e2e_litert", false) ?: false
-        if (smokeImage != null) {
-            lifecycleScope.launch {
-                loadBitmap(resolveUnderPushDir(smokeImage))?.let { px ->
-                    lastPhotoPath = resolveUnderPushDir(smokeImage)
-                    when {
-                        smokeE2eLitert -> runE2eLitert(px)   // 票 13：LiteRT 后端（页面状态需切到工具页可见）
-                        smokeE2e -> {
-                            val ok = loadLlm()
-                            if (ok) runE2e(px)
-                        }
-                        else -> {
-                            val lines = runOcr(px)
-                            if (smokeLlm && lines != null) {
-                                val ok = loadLlm()
-                                if (ok) runLlm()
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        handleSmokeIntent(intent)   // 票 14：抽出复用（onNewIntent 同一入口，冷启动 race 时可重发）
 
         setContent {
             MaterialTheme {
                 AppScaffold()
+            }
+        }
+    }
+
+    /** 票 14：onNewIntent 也走冒烟入口——App 存活时重发 smoke intent 不再被忽略。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleSmokeIntent(intent)
+    }
+
+    /** 冒烟 intent 处理（票 04/05 建立，票 14 抽出）：结果落 logcat（SMOKE_*），不依赖读屏。 */
+    private fun handleSmokeIntent(intent: Intent?) {
+        val smokeImage = intent?.getStringExtra("smoke_image") ?: return
+        val smokeLlm = intent.getBooleanExtra("smoke_llm", false)
+        val smokeE2e = intent.getBooleanExtra("smoke_e2e", false)
+        val smokeE2eLitert = intent.getBooleanExtra("smoke_e2e_litert", false)
+        litertBackendOverride = intent.getStringExtra("litert_backend")
+        Log.i(TAG, "SMOKE_INTENT image=$smokeImage e2e=$smokeE2e litert=$smokeE2eLitert backend=$litertBackendOverride")
+        lifecycleScope.launch {
+            loadBitmap(resolveUnderPushDir(smokeImage))?.let { px ->
+                lastPhotoPath = resolveUnderPushDir(smokeImage)
+                when {
+                    smokeE2eLitert -> runE2eLitert(px)   // 票 13/14：LiteRT 后端
+                    smokeE2e -> {
+                        val ok = loadLlm()
+                        if (ok) runE2e(px)
+                    }
+                    else -> {
+                        val lines = runOcr(px)
+                        if (smokeLlm && lines != null) {
+                            val ok = loadLlm()
+                            if (ok) runLlm()
+                        }
+                    }
+                }
             }
         }
     }
@@ -410,18 +424,18 @@ class MainActivity : ComponentActivity() {
      * 成功后进确认界面（票 06 确认流），不再直接展示结果。
      */
     /**
-     * 票 13：LiteRT-LM 后端端到端（速度对照）。
-     * 同一共享引擎管线，transport 换 LitertLlmTransport（GPU/OpenCL）；
-     * 基准：vivo 同厂 GPU 580 prefill / 21 decode tok/s，预期端到端 ~5-10s。
+     * 票 14：LiteRT-LM GPU 后端端到端（INT4 GPU 优化档）。
+     * 同一共享引擎管线，transport 默认 GPU/OpenCL；GPU 初始化失败自动降级 CPU。
+     * 基准：vivo 同厂 GPU 580-1056 prefill / 21-22 decode tok/s，预期端到端 ~3-5s。
      */
     private suspend fun runE2eLitert(pixels: IntArray?): Unit = withContext(Dispatchers.Default) {
         if (pixels == null) {
             status.value = "先 1.选截图"
             return@withContext
         }
-        val modelFile = File(pushDir, "Qwen3-0.6B.litertlm")
-        if (!modelFile.exists()) {
-            status.value = "缺 ${modelFile.name}（adb push 到 ${pushDir.absolutePath}）"
+        val modelFile = litertlmPath?.let(::File)
+        if (modelFile == null || !modelFile.exists()) {
+            status.value = "缺 .litertlm 模型（adb push 到 ${pushDir.absolutePath}）"
             return@withContext
         }
         val engine = ocrEngine ?: OcrEngine(
@@ -431,10 +445,24 @@ class MainActivity : ComponentActivity() {
             threads = 4,
         ).also { ocrEngine = it }
 
-        status.value = "LiteRT 端到端（CPU——GPU OpenCL 库真机不可用）…"
-        // 票 13 实测：vivo 封闭 OpenCL（libOpenCL.so 不暴露给 App 沙箱），GPU 后端报
-        // "Can not find OpenCL library on this device"。CPU 档公开基准 165/9 tok/s。
-        val transport = LitertLlmTransport(modelPath = modelFile.absolutePath, backend = com.google.ai.edge.litertlm.Backend.CPU())
+        // 票 14：默认 GPU（manifest uses-native-library 解锁 OpenCL）；init 失败降级 CPU。
+        // smoke intent 可传 litert_backend=cpu 强制 CPU（A/B 对照用），值存 litertBackendOverride。
+        val wantGpu = !litertBackendOverride.equals("cpu", ignoreCase = true)
+        status.value = "LiteRT 端到端（${if (wantGpu) "GPU" else "CPU"}…）"
+        val transport = if (!wantGpu) {
+            LitertLlmTransport(modelPath = modelFile.absolutePath, backend = com.google.ai.edge.litertlm.Backend.CPU())
+                .also { it.ensureLoaded() }
+        } else {
+            try {
+                LitertLlmTransport(modelPath = modelFile.absolutePath, backend = com.google.ai.edge.litertlm.Backend.GPU())
+                    .also { it.ensureLoaded() }
+            } catch (t: Throwable) {
+                Log.w(TAG, "GPU 后端初始化失败，降级 CPU：$t")
+                status.value = "GPU 不可用（${t.message}），降级 CPU"
+                LitertLlmTransport(modelPath = modelFile.absolutePath, backend = com.google.ai.edge.litertlm.Backend.CPU())
+                    .also { it.ensureLoaded() }
+            }
+        }
         try {
             val pipeline = OnDevicePipeline(engine, transport, CATEGORIES)
             val t0 = System.currentTimeMillis()
@@ -535,6 +563,7 @@ class MainActivity : ComponentActivity() {
                 f.name.startsWith("ch_PP-OCRv4_rec") -> recPath = f.absolutePath
                 f.name.startsWith("ch_ppocr_mobile") -> clsPath = f.absolutePath
                 f.name.endsWith(".gguf") && (gguf == null || preferredOver(f, gguf)) -> gguf = f
+                f.name.endsWith(".litertlm") -> litertlmPath = f.absolutePath // 票 14：多档并存取最后一个（推哪档用哪档）
             }
         }
         ggufPath = gguf?.absolutePath

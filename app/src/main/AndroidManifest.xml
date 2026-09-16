@@ -5,6 +5,8 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.PhotoLedger">
+        <!-- 票 14：OpenCL 是厂商非公开库（linker namespace 拦截），须显式声明才能被 LiteRT GPU 后端 dlopen -->
+        <uses-native-library android:name="libOpenCL.so" />
         <activity
             android:name=".MainActivity"
             android:exported="true">

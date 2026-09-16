@@ -29,6 +29,7 @@ fun runGate(
     port: Int,
     outPath: String?,
     transportKind: String = "llamacpp",   // 票 13：llamacpp | litert
+    litertBackend: String = "cpu",        // 票 14：litert 档后端 cpu | gpu（桌面 WSL 无 OpenCL 时 gpu 会失败，真机闸门走 App）
 ) {
     val root = File(System.getProperty("user.dir")).let { dir ->
         generateSequence(dir) { it.parentFile }.firstOrNull { File(it, "settings.gradle.kts").exists() } ?: dir
@@ -60,9 +61,14 @@ fun runGate(
 
     runBlocking {
         if (transportKind == "litert") {
+            val backend = if (litertBackend.equals("gpu", ignoreCase = true)) {
+                com.google.ai.edge.litertlm.Backend.GPU()
+            } else {
+                com.google.ai.edge.litertlm.Backend.CPU()
+            }
             LitertJvmTransport(
                 modelPath = (File(root, model).takeIf { File(root, model).exists() } ?: File(model)).absolutePath,
-                backend = com.google.ai.edge.litertlm.Backend.CPU(),
+                backend = backend,
             ).use { transport ->
                 runGateScoring(csv, images, annotations, outPath, transport, ocrWorker)
             }
