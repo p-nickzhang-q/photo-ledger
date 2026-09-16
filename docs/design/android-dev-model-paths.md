@@ -51,3 +51,9 @@ cmd.exe /c "set JAVA_HOME=D:\Program Files\Java\ms-21.0.7&& D:\Android\Projects\
 - NDK：27.0.12077973（arm64-v8a only，票 04 冒烟阶段 abiFilter）
 - CMake：3.22.1
 - 产物：`app/build/outputs/apk/debug/app-debug.apk`
+
+## 票 14 补充（LiteRT GPU）
+
+- LLM 模型用 `Qwen3-0.6B.litertlm`（INT8，586MB）。**INT4 档（dynamic_wi4b32）勿放 files 目录**：上游 bug 输出截断（#3577），且 scanModelDir 取最后一个 .litertlm——备份文件改名留存会误被选中，备份须挪出 files。
+- GPU 后端需要 `app/src/main/jniLibs/arm64-v8a/libLiteRtTopKOpenClSampler.so`（已在库，来自 LiteRT-LM prebuilt v0.17.0）。缺失时 GPU 静默回退 CPU 采样器，输出截断 145 字符。
+- smoke intent：`--ez smoke_e2e_litert true`，可选 `--es litert_backend cpu|gpu` 强制后端（默认 GPU，init 失败自动降级）。
