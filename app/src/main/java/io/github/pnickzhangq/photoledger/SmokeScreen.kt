@@ -29,6 +29,7 @@ fun SmokeScreen(
     onOcr: () -> Unit,
     onLlm: () -> Unit,
     onE2e: () -> Unit,
+    onE2eLitert: () -> Unit = {},   // 票 13：LiteRT 后端端到端（速度对照）
 ) {
     Column(
         modifier = Modifier
@@ -47,6 +48,7 @@ fun SmokeScreen(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onE2e, enabled = imageReady) { Text("5.端到端→Draft") }
+            Button(onClick = onE2eLitert, enabled = imageReady) { Text("6.LiteRT端到端") }
         }
         Column(
             modifier = Modifier

@@ -37,6 +37,7 @@ fun main(args: Array<String>) = runBlocking {
         var ocrWorker = "scripts/ocr_worker.py"
         var out: String? = null
         var port = 8905
+        var transportKind = "llamacpp"
         var i = 1
         while (i < args.size) {
             when (args[i]) {
@@ -46,6 +47,7 @@ fun main(args: Array<String>) = runBlocking {
                 "--ocr-worker" -> ocrWorker = args[++i]
                 "--out" -> out = args[++i]
                 "--port" -> port = args[++i].toInt()
+                "--transport" -> transportKind = args[++i]
                 else -> if (csv.isEmpty()) csv = args[i]
             }
             i++
@@ -59,6 +61,7 @@ fun main(args: Array<String>) = runBlocking {
             ocrWorker = ocrWorker,
             port = port,
             outPath = out,
+            transportKind = transportKind,
         )
         return@runBlocking
     }

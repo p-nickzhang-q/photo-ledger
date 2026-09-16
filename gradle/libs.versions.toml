@@ -1,10 +1,10 @@
 [versions]
-kotlin = "2.1.20"
+kotlin = "2.4.10"        # 票13：litertlm 0.17.0 metadata 2.4.0（0.13.1 是 2.3），KSP 用 2.3.12
 coroutines = "1.10.1"
 junit = "5.11.4"
 serialization = "1.8.0"
-agp = "8.7.3"
-ksp = "2.1.20-1.0.31"
+agp = "8.13.2"          # 票13：KSP 2.3.12 要求 AGP >= 8.12
+ksp = "2.3.12"           # KSP2 独立版本号，配 Kotlin 2.4
 room = "2.7.1"
 
 [libraries]

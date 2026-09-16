@@ -13,7 +13,9 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 object DraftNormalizer {
 
-    private val json = Json { ignoreUnknownKeys = false }
+    // 票 13：JSON Schema 约束下模型可能输出 $schema 等元字段（LiteRT/LLGuidance 行为），
+    // 契约字段照常校验，未知键容忍——required 七字段仍然强制。
+    private val json = Json { ignoreUnknownKeys = true }
 
     /** 币种白名单与 [GrammarGenerator] 的枚举保持一致。 */
     val CURRENCIES = listOf("CNY", "USD", "EUR", "JPY", "GBP", "HKD", "TWD", "KRW", "OTHER")

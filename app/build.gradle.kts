@@ -76,6 +76,9 @@ dependencies {
 
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 
+    // 票 13：LiteRT-LM 推理后端（速度破局评估——vivo 同厂基准 GPU 21 tok/s vs llama.cpp 1）
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.0")
+
     // 票 06：账目库（Room schema 在本票定型）
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)

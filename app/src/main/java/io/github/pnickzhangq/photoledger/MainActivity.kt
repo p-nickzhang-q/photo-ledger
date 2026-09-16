@@ -41,6 +41,7 @@ import io.github.pnickzhangq.photoledger.data.LedgerRepository
 import io.github.pnickzhangq.photoledger.data.PhotoStore
 import io.github.pnickzhangq.photoledger.ocr.ExtractResult
 import io.github.pnickzhangq.photoledger.ocr.JniLlmTransport
+import io.github.pnickzhangq.photoledger.ocr.LitertLlmTransport
 import io.github.pnickzhangq.photoledger.ocr.LlamaNative
 import io.github.pnickzhangq.photoledger.ocr.OcrEngine
 import io.github.pnickzhangq.photoledger.ocr.OcrLine
@@ -124,18 +125,23 @@ class MainActivity : ComponentActivity() {
         val smokeImage = intent?.getStringExtra("smoke_image")
         val smokeLlm = intent?.getBooleanExtra("smoke_llm", false) ?: false
         val smokeE2e = intent?.getBooleanExtra("smoke_e2e", false) ?: false
+        val smokeE2eLitert = intent?.getBooleanExtra("smoke_e2e_litert", false) ?: false
         if (smokeImage != null) {
             lifecycleScope.launch {
                 loadBitmap(resolveUnderPushDir(smokeImage))?.let { px ->
                     lastPhotoPath = resolveUnderPushDir(smokeImage)
-                    if (smokeE2e) {
-                        val ok = loadLlm()
-                        if (ok) runE2e(px)
-                    } else {
-                        val lines = runOcr(px)
-                        if (smokeLlm && lines != null) {
+                    when {
+                        smokeE2eLitert -> runE2eLitert(px)   // 票 13：LiteRT 后端（页面状态需切到工具页可见）
+                        smokeE2e -> {
                             val ok = loadLlm()
-                            if (ok) runLlm()
+                            if (ok) runE2e(px)
+                        }
+                        else -> {
+                            val lines = runOcr(px)
+                            if (smokeLlm && lines != null) {
+                                val ok = loadLlm()
+                                if (ok) runLlm()
+                            }
                         }
                     }
                 }
@@ -225,6 +231,7 @@ class MainActivity : ComponentActivity() {
                         onPickModel = { pickModel.launch("*/*") },
                         onLlm = { lifecycleScope.launch { runLlm() } },
                         onE2e = { lifecycleScope.launch { runE2e(lastPixels) } },
+                        onE2eLitert = { lifecycleScope.launch { runE2eLitert(lastPixels) } },
                     )
                 }
             }
@@ -402,6 +409,59 @@ class MainActivity : ComponentActivity() {
      * 端到端提取（票 05）：内存 gate → 共享引擎管线 → Draft。
      * 成功后进确认界面（票 06 确认流），不再直接展示结果。
      */
+    /**
+     * 票 13：LiteRT-LM 后端端到端（速度对照）。
+     * 同一共享引擎管线，transport 换 LitertLlmTransport（GPU/OpenCL）；
+     * 基准：vivo 同厂 GPU 580 prefill / 21 decode tok/s，预期端到端 ~5-10s。
+     */
+    private suspend fun runE2eLitert(pixels: IntArray?): Unit = withContext(Dispatchers.Default) {
+        if (pixels == null) {
+            status.value = "先 1.选截图"
+            return@withContext
+        }
+        val modelFile = File(pushDir, "Qwen3-0.6B.litertlm")
+        if (!modelFile.exists()) {
+            status.value = "缺 ${modelFile.name}（adb push 到 ${pushDir.absolutePath}）"
+            return@withContext
+        }
+        val engine = ocrEngine ?: OcrEngine(
+            detModel = File(detPath ?: return@withContext.also { status.value = "缺 det.onnx" }),
+            recModel = File(recPath ?: return@withContext.also { status.value = "缺 rec.onnx" }),
+            clsModel = clsPath?.let(::File),
+            threads = 4,
+        ).also { ocrEngine = it }
+
+        status.value = "LiteRT 端到端（CPU——GPU OpenCL 库真机不可用）…"
+        // 票 13 实测：vivo 封闭 OpenCL（libOpenCL.so 不暴露给 App 沙箱），GPU 后端报
+        // "Can not find OpenCL library on this device"。CPU 档公开基准 165/9 tok/s。
+        val transport = LitertLlmTransport(modelPath = modelFile.absolutePath, backend = com.google.ai.edge.litertlm.Backend.CPU())
+        try {
+            val pipeline = OnDevicePipeline(engine, transport, CATEGORIES)
+            val t0 = System.currentTimeMillis()
+            when (val r = pipeline.extract(pixels, lastW, lastH, fallbackYear = java.time.Year.now().value)) {
+                is ExtractResult.Success -> {
+                    val total = System.currentTimeMillis() - t0
+                    Log.i(TAG, "SMOKE_LITERT_E2E_OK drafts=${r.drafts.size} ocrMs=${r.times.ocrMs} llmMs=${r.times.llmMs} totalMs=$total")
+                    r.drafts.forEachIndexed { i, d ->
+                        Log.i(TAG, "SMOKE_LITERT_DRAFT[$i] datePaid=${d.datePaid} amount=${d.amountPaid} merchant=${d.merchant} category=${d.category}")
+                    }
+                    e2eResult.value = r.drafts.joinToString("\n\n") { d -> "⚡ ${d.datePaid}\n¥${d.amountPaid}  ${d.category}\n${d.merchant}" }
+                    status.value = "LiteRT 端到端完成：${r.drafts.size} 单，总 ${total}ms（OCR ${r.times.ocrMs}ms / LLM ${r.times.llmMs}ms）"
+                    if (r.drafts.isNotEmpty()) {
+                        page.value = Page.Confirm(r.drafts[0], lastPhotoPath)
+                    }
+                }
+                is ExtractResult.Failure -> {
+                    Log.e(TAG, "SMOKE_LITERT_E2E_FAIL reason=${r.reason}")
+                    e2eResult.value = "❌ ${r.reason}"
+                    status.value = "LiteRT 端到端失败（见下方原因）"
+                }
+            }
+        } finally {
+            transport.close()
+        }
+    }
+
     private suspend fun runE2e(pixels: IntArray?): Unit = withContext(Dispatchers.Default) {
         if (pixels == null) {
             status.value = "先 1.选截图"
