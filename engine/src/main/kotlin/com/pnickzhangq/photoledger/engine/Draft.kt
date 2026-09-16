@@ -14,20 +14,23 @@ enum class DateSource {
 /**
  * 提取结果（CONTEXT.md「Draft」：待确认状态，确认后才成为 Entry）。
  * 金额口径 = 实付款（CONTEXT.md「实付款」：商品总价、运费、优惠不参与统计）。
+ *
+ * 票 07 提速：模型只输出 merchant/amountPaid/datePaid/category 四个用户需要的字段
+ * （decode token 减半）；currency/dateSource/orderStatus 由引擎填默认值，不再要求模型生成。
  */
 @Serializable
 data class Draft(
     val merchant: String,
     /** 实付款金额（非商品总价）。 */
     val amountPaid: Double,
-    /** 币种，默认 CNY（CONTEXT.md「币种」）。 */
-    val currency: String,
-    /** 日期，取付款时间优先退下单时间。 */
+    /** 币种，默认 CNY（模型不再输出，人工/遗留路径可覆盖）。 */
+    val currency: String = "CNY",
+    /** 日期，取付款时间优先退下单时间，只到天（YYYY-MM-DD）；无日期为空串。 */
     val datePaid: String,
-    /** 日期口径标注：付款时间 / 下单时间。 */
-    val dateSource: DateSource,
-    /** 订单状态文本（v1 仅展示，不参与账目逻辑）。 */
-    val orderStatus: String,
+    /** 日期口径：模型不再输出，默认按付款时间。 */
+    val dateSource: DateSource = DateSource.PAYMENT_TIME,
+    /** 订单状态文本（模型不再输出，默认空；手工/编辑界面可填）。 */
+    val orderStatus: String = "",
     /** 类别建议（从用户类别列表中选）。 */
     val category: String,
 )

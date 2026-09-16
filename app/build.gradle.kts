@@ -70,6 +70,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // 票 07：队列状态图标（Schedule/Error/ContentCopy 在 extended 包）
+    implementation("androidx.compose.material:material-icons-extended")
 
     // 票 06：列表/确认界面图片加载（缩略图与原图对照）
     implementation("io.coil-kt:coil-compose:2.7.0")

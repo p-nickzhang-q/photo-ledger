@@ -21,7 +21,8 @@ class PromptBuilderTest {
     @Test
     fun `prompt 表达付款时间优先口径`() {
         val p = PromptBuilder.build(listOf("其他"))
-        assertTrue("付款时间" in p && "order_time" in p && "payment_time" in p)
+        // 票 07 提速：dateSource 不再是输出字段，口径退阶逻辑仍在（付款时间优先，退下单时间）
+        assertTrue("付款时间" in p && "下单时间" in p)
     }
 
     // ---------- OCR 版 prompt（票 12） ----------
@@ -49,6 +50,6 @@ class PromptBuilderTest {
     @Test
     fun `OCR 版 prompt 保持实付款口径`() {
         val p = PromptBuilder.buildFromOcr(listOf("其他"), "实付款￥1", emptyList(), emptyList())
-        assertTrue("实付" in p && "payment_time" in p && "order_time" in p)
+        assertTrue("实付" in p, "prompt 须写明实付款口径（CONTEXT.md）")
     }
 }

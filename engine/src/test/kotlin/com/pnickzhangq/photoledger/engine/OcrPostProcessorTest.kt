@@ -108,6 +108,36 @@ class OcrPostProcessorTest {
         assertEquals(null, OcrPostProcessor.normalizeAmount("1234567"))
     }
 
+    @Test
+    fun `金额取货币符号后的数字段——前置计数不污染`() {
+        // 真实形态（票 07 真机）：「共N件」前缀的旧逻辑会把 4/5 当金额候选污染 prompt
+        assertEquals(
+            30.6,
+            OcrPostProcessor.normalizeAmount("共4件(含包装/配送费）实付款￥30.6"),
+        )
+        assertEquals(
+            33.6,
+            OcrPostProcessor.normalizeAmount("共5件(含包装/配送费）实付款￥33.6"),
+        )
+        assertEquals(
+            16.5,
+            OcrPostProcessor.normalizeAmount("09.07|含包装/配送费实付款￥16.5"),
+        )
+    }
+
+    @Test
+    fun `货币段形近字符修复——OCR 把 30 认成 3U`() {
+        // 真实形态（票 07 真机 logcat）：「买付款￥3U.6」→ 修复为 30.6，模型不再拿到乱码
+        assertEquals(
+            30.6,
+            OcrPostProcessor.normalizeAmount("共4件(含包装/配送费）买付款￥3U.6"),
+        )
+        assertEquals(30.6, OcrPostProcessor.normalizeAmount("实付款￥3O.6"))
+        assertEquals(12.34, OcrPostProcessor.normalizeAmount("￥l2.34"))
+        // 形近修复只作用于货币符号后的段：无符号行里的 U 不被当 0
+        assertEquals(null, OcrPostProcessor.normalizeAmount("共U件"))
+    }
+
     // ---------- 行聚类：一图多单 ----------
 
     private fun line(text: String, y: Int, x: Int = 70) = OcrLine(

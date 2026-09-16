@@ -39,9 +39,11 @@ class ExtractionEngine(
         val year = OcrPostProcessor.guessContextYear(lines) ?: fallbackYear
         return blocks.map { block ->
             val material = OcrPostProcessor.buildStructuredMaterial(block, year)
-            val prompt = PromptBuilder.buildFromOcr(categories, material.blockText, material.normalizedDates, material.amounts)
-            val dateGrammar = if (material.normalizedDates.isEmpty()) grammar
-            else GrammarGenerator.withDateAlternatives(grammar, material.normalizedDates)
+            // 票 07 提速：日期只到天——候选与 prompt 清单都截到 YYYY-MM-DD（去重）
+            val dateOnly = material.normalizedDates.map { it.take(10) }.distinct()
+            val prompt = PromptBuilder.buildFromOcr(categories, material.blockText, dateOnly, material.amounts)
+            val dateGrammar = if (dateOnly.isEmpty()) grammar
+            else GrammarGenerator.withDateAlternatives(grammar, dateOnly)
             val raw = transport.completeText(prompt, dateGrammar)
             DraftNormalizer.parse(raw, categories)
         }

@@ -47,7 +47,8 @@ class PhotoStore(private val rootDir: File) {
 
 class LedgerRepository(
     private val dao: EntryDao,
-    private val photoStore: PhotoStore,
+    /** 照片存储（票 07 去重需要 photosDir；其余场景仍走本类方法）。 */
+    val photoStore: PhotoStore,
 ) {
 
     val entries: Flow<List<Entry>> = dao.observeAll()

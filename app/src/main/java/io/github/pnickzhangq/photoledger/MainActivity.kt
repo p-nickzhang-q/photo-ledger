@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -37,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import io.github.pnickzhangq.photoledger.data.Entry
+import io.github.pnickzhangq.photoledger.data.ImportQueue
+import io.github.pnickzhangq.photoledger.data.ImportState
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
 import io.github.pnickzhangq.photoledger.data.LedgerRepository
 import io.github.pnickzhangq.photoledger.data.PhotoStore
@@ -51,6 +55,7 @@ import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
 import io.github.pnickzhangq.photoledger.ui.DraftForm
 import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
 import io.github.pnickzhangq.photoledger.ui.EntryForm
+import io.github.pnickzhangq.photoledger.ui.ImportQueueScreen
 import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
 import io.github.pnickzhangq.photoledger.ui.ManualEntryScreen
 import com.pnickzhangq.photoledger.engine.Draft
@@ -66,6 +71,7 @@ private sealed class Page {
     data class Confirm(val draft: Draft, val photoPath: String?) : Page()
     data class Detail(val entryId: Long) : Page()
     data object SmokeTools : Page()
+    data object ImportQueue : Page()   // 票 07
 }
 
 class MainActivity : ComponentActivity() {
@@ -85,6 +91,10 @@ class MainActivity : ComponentActivity() {
     // ---- 账目库 ----
     private lateinit var repo: LedgerRepository
     private val page = mutableStateOf<Page>(Page.Ledger)
+
+    // ---- 导入队列（票 07）——lifecycleScope 下懒建：需要 repo 就绪 ----
+    private var importQueue: ImportQueue? = null
+    private var importExtractor: ImportQueue.Extractor? = null
 
     // ---- 冒烟 UI 状态 ----
     private val status = mutableStateOf("工具页：选图/OCR/推理（票04/05 冒烟入口）")
@@ -126,6 +136,9 @@ class MainActivity : ComponentActivity() {
 
         handleSmokeIntent(intent)   // 票 14：抽出复用（onNewIntent 同一入口，冷启动 race 时可重发）
 
+        // 票 07：系统分享（SEND 单张 / SEND_MULTIPLE 多张）→ 导入队列
+        handleShareIntent(intent)
+
         setContent {
             MaterialTheme {
                 AppScaffold()
@@ -138,6 +151,29 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleSmokeIntent(intent)
+        handleShareIntent(intent)   // 票 07：App 存活时分享也进队列
+    }
+
+    /** 票 07：系统分享入口处理。SEND 单张 / SEND_MULTIPLE 多张，均入导入队列。 */
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent == null) return
+        Log.i(TAG, "SHARE_INTENT action=${intent.action} type=${intent.type}")
+        when (intent.action) {
+            Intent.ACTION_SEND ->
+                if (intent.type?.startsWith("image/") == true) {
+                    @Suppress("DEPRECATION")
+                    val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    Log.i(TAG, "SHARE_SEND uri=$uri")
+                    if (uri != null) enqueueImports(listOf(uri to "分享截图"))
+                }
+            Intent.ACTION_SEND_MULTIPLE ->
+                if (intent.type?.startsWith("image/") == true) {
+                    @Suppress("DEPRECATION")
+                    val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+                    Log.i(TAG, "SHARE_SEND_MULTIPLE count=${uris.size}")
+                    enqueueImports(uris.mapIndexed { i, u -> u to "分享截图${i + 1}" })
+                }
+        }
     }
 
     /** 冒烟 intent 处理（票 04/05 建立，票 14 抽出）：结果落 logcat（SMOKE_*），不依赖读屏。 */
@@ -148,6 +184,23 @@ class MainActivity : ComponentActivity() {
         val smokeE2eLitert = intent.getBooleanExtra("smoke_e2e_litert", false)
         litertBackendOverride = intent.getStringExtra("litert_backend")
         Log.i(TAG, "SMOKE_INTENT image=$smokeImage e2e=$smokeE2e litert=$smokeE2eLitert backend=$litertBackendOverride")
+
+        // 票 07：smoke_import=true 时截图入导入队列（真机验证队列全链路，绕 am 无法 grant 的限制）
+        if (intent.getBooleanExtra("smoke_import", false)) {
+            val path = resolveUnderPushDir(smokeImage)
+            lifecycleScope.launch {
+                val bytes = withContext(Dispatchers.IO) { runCatching { File(path).readBytes() }.getOrNull() }
+                Log.i(TAG, "SMOKE_IMPORT bytes=${bytes?.size ?: -1}")
+                if (bytes != null) {
+                    val queue = ensureImportQueue()
+                    page.value = Page.ImportQueue
+                    queue.enqueue(bytes, "队列测试.png")
+                    queue.runPending()
+                }
+            }
+            return
+        }
+
         lifecycleScope.launch {
             loadBitmap(resolveUnderPushDir(smokeImage))?.let { px ->
                 lastPhotoPath = resolveUnderPushDir(smokeImage)
@@ -182,6 +235,14 @@ class MainActivity : ComponentActivity() {
                 TopAppBar(
                     title = { Text("照片记账") },
                     actions = {
+                        // 票 07：列表页常驻「导入」入口（非空列表也要能进队列）
+                        if (current is Page.Ledger) {
+                            IconButton(onClick = {
+                                pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }) {
+                                Icon(Icons.Filled.PhotoLibrary, contentDescription = "导入截图")
+                            }
+                        }
                         IconButton(onClick = {
                             page.value = if (current is Page.SmokeTools) Page.Ledger else Page.SmokeTools
                         }) {
@@ -203,8 +264,15 @@ class MainActivity : ComponentActivity() {
                     is Page.Ledger -> LedgerListScreen(
                         entries = entries,
                         thumbDir = File(File(filesDir, "ledger"), "thumbs"),
-                        emptyHint = "还没有账目\n\n右上角「工具」里跑端到端提取，\n或点右下角 ➕ 手工记账",
+                        emptyHint = "还没有账目\n\n从相册导入订单截图开始，\n或点右下角 ➕ 手工记账",
                         onEntryClick = { page.value = Page.Detail(it.id) },
+                        onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    )
+                    is Page.ImportQueue -> ImportQueueScreen(
+                        items = importQueue?.items?.collectAsState()?.value.orEmpty(),
+                        onBack = { page.value = Page.Ledger },
+                        onConfirmDraft = ::confirmFromQueue,
+                        onManualEntry = ::manualFromQueue,
                     )
                     is Page.ManualAdd -> ManualEntryScreen(
                         categories = CATEGORIES,
@@ -290,6 +358,102 @@ class MainActivity : ComponentActivity() {
             )
         }
         page.value = Page.Ledger
+    }
+
+    // ---- 导入队列（票 07）：相册多选 + 系统分享 → 同一队列 → 确认流 ----
+
+    /** 队列常驻 transport（票 07 提速）：批内每张不再新建/销毁引擎（原每张白付 ~4s 加载）。 */
+    private var queueTransport: LitertLlmTransport? = null
+
+    private fun obtainQueueTransport(): LitertLlmTransport {
+        queueTransport?.let { return it }
+        val modelPath = litertlmPath?.let(::File)?.takeIf(File::exists)?.absolutePath
+            ?: error("缺 .litertlm 模型")
+        val t = try {
+            LitertLlmTransport(
+                modelPath = modelPath,
+                backend = com.google.ai.edge.litertlm.Backend.GPU(),
+            ).also { it.ensureLoaded() }
+        } catch (t: Throwable) {
+            Log.w(TAG, "GPU 不可用，队列提取用 CPU：$t")
+            LitertLlmTransport(
+                modelPath = modelPath,
+                backend = com.google.ai.edge.litertlm.Backend.CPU(),
+            ).also { it.ensureLoaded() }
+        }
+        queueTransport = t
+        return t
+    }
+
+    /** 真实提取器：截图字节 → 解码像素 → OnDevicePipeline（transport 常驻复用）。 */
+    private fun makeImportExtractor(): ImportQueue.Extractor {
+        return ImportQueue.Extractor { bytes ->
+            val engine = ocrEngine ?: OcrEngine(
+                detModel = File(detPath ?: error("缺 det.onnx")),
+                recModel = File(recPath ?: error("缺 rec.onnx")),
+                clsModel = clsPath?.let(::File),
+                threads = 4,
+            ).also { ocrEngine = it }
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: return@Extractor io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Failure("图片解码失败")
+            val pixels = IntArray(bmp.width * bmp.height)
+            bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            val w = bmp.width; val h = bmp.height
+            bmp.recycle()
+
+            val pipeline = OnDevicePipeline(engine, obtainQueueTransport(), CATEGORIES)
+            when (val r = pipeline.extract(pixels, w, h, fallbackYear = java.time.Year.now().value)) {
+                is io.github.pnickzhangq.photoledger.ocr.ExtractResult.Success ->
+                    io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Success(r.drafts)
+                is io.github.pnickzhangq.photoledger.ocr.ExtractResult.Failure ->
+                    io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Failure(r.reason)
+            }
+        }
+    }
+
+    /** 队列懒建（repo 就绪后）；复用同一实例保跨批哈希缓存。 */
+    private fun ensureImportQueue(): ImportQueue =
+        importQueue ?: ImportQueue(repo, makeImportExtractor()).also { importQueue = it }
+
+    /** 把若干 SAF 图片字节入队并跳到队列页，随后逐张提取。 */
+    private fun enqueueImports(list: List<Pair<Uri, String>>) {
+        if (list.isEmpty()) return
+        val queue = ensureImportQueue()
+        page.value = Page.ImportQueue
+        lifecycleScope.launch {
+            list.forEach { (uri, name) ->
+                val bytes = withContext(Dispatchers.IO) {
+                    try {
+                        contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "IMPORT_READ_FAIL $name uri=$uri", t)
+                        null
+                    }
+                }
+                Log.i(TAG, "IMPORT_ENQUEUE $name bytes=${bytes?.size ?: -1}")
+                if (bytes != null) queue.enqueue(bytes, name)
+            }
+            queue.runPending()
+        }
+    }
+
+    /** 队列 Done 项 → 直接入账（不经编辑页）。无日期截图（OCR 小角标没读出）按导入当天入账。 */
+    private fun confirmFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem) {
+        val draft = (item.state as? ImportState.Done)?.drafts?.firstOrNull() ?: return
+        val effective = if (draft.datePaid.isBlank()) {
+            draft.copy(datePaid = java.time.LocalDate.now().toString())
+        } else {
+            draft
+        }
+        lifecycleScope.launch {
+            repo.confirm(draft = effective, photoBytes = item.bytes)
+            ensureImportQueue().markConfirmed(item)
+        }
+    }
+
+    /** 队列 Failed 项 → 手工录入（截图保留但 v1 手工表单无图；放弃则队列项仍在）。 */
+    private fun manualFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem) {
+        page.value = Page.ManualAdd
     }
 
     // ---- 冒烟链路（票04/05，协程）----
@@ -588,6 +752,12 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---- SAF 选择器 ----
+
+    /** 票 07：相册多选 → 导入队列。 */
+    private val pickMultipleImages =
+        registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20)) { uris ->
+            enqueueImports(uris.map { it to (it.lastPathSegment ?: "截图") })
+        }
 
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->

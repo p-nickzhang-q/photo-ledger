@@ -79,15 +79,38 @@ object OcrPostProcessor {
 
     private val NUM = Regex("""[0-9０-９][0-9０-９，,．.]*(\.[0-9０-９]+)?""")
 
+    /** 形近字符→数字（小字号 OCR 常见误读）。仅用于货币符号后的金额段，不碰普通文本。 */
+    private val DIGIT_LOOKALIKES = mapOf(
+        'O' to '0', 'o' to '0', 'U' to '0', 'D' to '0', 'Q' to '0',
+        'l' to '1', 'I' to '1', 'i' to '1', '|' to '1',
+        'Z' to '2', 'z' to '2',
+        'A' to '4',
+        'S' to '5', 's' to '5',
+        'b' to '6', 'G' to '6',
+        'B' to '8',
+        'g' to '9', 'q' to '9',
+    )
+
     /**
      * 从文本片段提取实付款金额。规则：
+     * - 行内含货币符号（￥/¥）时取【符号后】的数字段：实付金额总是跟在符号后，
+     *   避免「共4件」类前置计数污染候选；段内先做形近字符修复（票 07 真机：OCR
+     *   把「30」认成「3U」，旧逻辑只能给模型喂乱码导致金额瞎猜）
      * - 剥 ¥/￥ 前缀、全角转半角、千分位逗号去除
      * - 4 位纯整数且无小数点 → 视为小数点丢失（OCR 把 10.10 认成 1010），按两位小数解读；
      *   更长整数段（≥5 位）或带小数点的不动
      * - 找不到数字返回 null
      */
     fun normalizeAmount(raw: String): Double? {
-        val m = NUM.find(raw) ?: return null
+        val symbolIdx = maxOf(raw.lastIndexOf('￥'), raw.lastIndexOf('¥'))
+        val source = if (symbolIdx >= 0) {
+            buildString {
+                for (c in raw.substring(symbolIdx + 1)) append(DIGIT_LOOKALIKES[c] ?: c)
+            }
+        } else {
+            raw
+        }
+        val m = NUM.find(source) ?: return null
         val s = m.value
             .replace("０", "0").replace("１", "1").replace("２", "2").replace("３", "3")
             .replace("４", "4").replace("５", "5").replace("６", "6").replace("７", "7")

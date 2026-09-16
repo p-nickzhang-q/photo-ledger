@@ -11,6 +11,7 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ResponseFormat
 import com.google.ai.edge.litertlm.SamplerConfig
+import com.pnickzhangq.photoledger.engine.GrammarGenerator
 import com.pnickzhangq.photoledger.engine.LlmTransport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,12 +56,19 @@ class LitertLlmTransport(
             ),
         )
         val t0 = System.currentTimeMillis()
+        val schema = GrammarGenerator.toJsonSchema(grammar)
         try {
-            val response = conversation.sendMessage(
-                text = prompt,
-                responseFormat = ResponseFormat.json(grammarToJsonSchema(grammar)),
-                maxOutputToken = maxOutputToken,
-            )
+            val response = try {
+                conversation.sendMessage(
+                    text = prompt,
+                    responseFormat = ResponseFormat.json(schema),
+                    maxOutputToken = maxOutputToken,
+                )
+            } catch (t: Throwable) {
+                // 真机 schema 问题桌面未必复现（票 07：无日期截图分支）——失败时把 schema 落日志
+                Log.w(TAG, "LITERT_SEND_FAIL schema=$schema", t)
+                throw t
+            }
             // 拼流式 Message 块（同步返回的是完整消息，取 text）
             val out = response.contents.contents.joinToString("") { c ->
                 (c as? com.google.ai.edge.litertlm.Content.Text)?.text ?: ""
@@ -86,81 +94,12 @@ class LitertLlmTransport(
 
         /**
          * 清洗 JSON 字符串值的字面引号：`"key": "\"value\""` → `"key": "value"`。
-         * LLGuidance 对 enum 约束的输出 quirk（票 13 实测）。只处理字符串值，
-         * 正则锚定「冒号后紧跟 \" 开头、行尾 \" 结束」的值形态。
+         * 根因（票 07 定位）曾是 schema enum 值双层引号（stripGbnfQuotes 只剥一层），
+         * GrammarGenerator.toJsonSchema 修对后此清洗仅为兜底；只剥「整体为 \"...\"」形态的值。
          */
         internal fun stripDoubleEncodedStringValues(json: String): String =
             json.replace(Regex("(\"(?:[^\"\\\\]|\\\\.)*\"\\s*:\\s*)\"\\\\\"([^\\\\]*?)\\\\\"\"")) { m ->
                 "${m.groupValues[1]}\"${m.groupValues[2]}\""
             }
-
-        /**
-         * 剥 GBNF 字符串字面量的引号：GrammarGenerator 产出的是 GBNF 转义引号形态
-         * （`\"餐饮\"`），非裸引号。分三种形态处理：`\"X\"` / `"X"` / `X`。
-         */
-        private fun stripGbnfQuotes(token: String): String {
-            val t = token.trim()
-            return when {
-                t.startsWith("\\\"") && t.endsWith("\\\"") && t.length >= 4 ->
-                    t.substring(2, t.length - 2)
-                t.startsWith("\"") && t.endsWith("\"") && t.length >= 2 ->
-                    t.substring(1, t.length - 1)
-                else -> t
-            }
-        }
-
-        /**
-         * GBNF → JSON Schema 转译（本仓 Draft 契约专用，非通用转换器）：
-         * 1. 解析 date 规则的候选清单（withDateAlternatives 注入的 `"YYYY-MM-DD HH:MM:SS" | ... | ""`）
-         *    → datePaid 的 enum；无清单时 datePaid 为自由 string
-         * 2. 其余字段按 ExtractionSchema 契约重建（与 GrammarGenerator 语义一致）
-         * 3. category/currency/dateSource 枚举从 grammar 的枚举行提取
-         */
-        internal fun grammarToJsonSchema(grammar: String): String {
-            // date 候选清单：date ::= "..." | "..." | ""
-            val dateLine = grammar.lineSequence().firstOrNull { it.startsWith("date ::=") }
-            val dateCandidates = dateLine
-                ?.removePrefix("date ::=")
-                ?.split("|")
-                ?.map(::stripGbnfQuotes)
-                ?.filter { it.isNotEmpty() }
-                ?.toList()
-                ?: emptyList()
-
-            // category 枚举：category ::= "餐饮" | "购物" | ...
-            fun enumFrom(ruleName: String): List<String> {
-                val line = grammar.lineSequence().firstOrNull { it.startsWith("$ruleName ::=") } ?: return emptyList()
-                return line.removePrefix("$ruleName ::=").split("|").map(::stripGbnfQuotes).filter { it.isNotEmpty() }
-            }
-
-            val categories = enumFrom("category")
-            val currencies = enumFrom("currency")
-            val dateSources = enumFrom("dateSource")
-
-            fun enumClause(name: String, values: List<String>, fallbackType: String = "string"): String =
-                if (values.isEmpty()) {
-                    "\"$name\":{\"type\":\"$fallbackType\"}"
-                } else {
-                    val enumItems = values.joinToString(",") { v -> "\"" + v + "\"" }
-                    "\"$name\":{\"type\":\"string\",\"enum\":[$enumItems]}"
-                }
-
-            return buildString {
-                append("{")
-                append("\"type\":\"object\",")
-                append("\"properties\":{")
-                append("\"merchant\":{\"type\":\"string\"},")
-                append("\"amountPaid\":{\"type\":\"number\"},")
-                append(enumClause("currency", currencies)).append(",")
-                append(enumClause("datePaid", dateCandidates)).append(",")
-                append(enumClause("dateSource", dateSources)).append(",")
-                append("\"orderStatus\":{\"type\":\"string\"},")
-                append(enumClause("category", categories))
-                append("},")
-                append("\"required\":[\"merchant\",\"amountPaid\",\"currency\",\"datePaid\",\"dateSource\",\"orderStatus\",\"category\"],")
-                append("\"additionalProperties\":false")
-                append("}")
-            }
-        }
     }
 }

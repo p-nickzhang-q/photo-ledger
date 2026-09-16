@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,6 +28,7 @@ fun LedgerListScreen(
     thumbDir: File,
     emptyHint: String,
     onEntryClick: (Entry) -> Unit,
+    onImportFromGallery: () -> Unit = {},   // 票 07：相册多选入口（空态/工具栏均可触发）
 ) {
     if (entries.isEmpty()) {
         Column(
@@ -35,6 +37,9 @@ fun LedgerListScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(emptyHint, style = MaterialTheme.typography.bodyMedium)
+            Button(onClick = onImportFromGallery, Modifier.padding(top = 16.dp)) {
+                Text("从相册导入截图")
+            }
         }
         return
     }

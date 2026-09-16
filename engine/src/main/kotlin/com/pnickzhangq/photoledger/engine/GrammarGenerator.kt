@@ -10,49 +10,34 @@ package com.pnickzhangq.photoledger.engine
 object GrammarGenerator {
 
     fun fromSchema(schema: ExtractionSchema): String = buildString {
-        // 对象骨架：字段按固定顺序输出，全部必填（契约要求 7 字段齐全）
+        // 对象骨架：字段按固定顺序输出，全部必填（票 07 提速：只约束用户需要的 4 字段）
         append("root ::= \"{\" ws \"\\\"merchant\\\"\" ws \":\" ws merchant \",\" ws")
         append(" \"\\\"amountPaid\\\"\" ws \":\" ws amount \",\" ws")
-        append(" \"\\\"currency\\\"\" ws \":\" ws currency \",\" ws")
         append(" \"\\\"datePaid\\\"\" ws \":\" ws date \",\" ws")
-        append(" \"\\\"dateSource\\\"\" ws \":\" ws dateSource \",\" ws")
-        append(" \"\\\"orderStatus\\\"\" ws \":\" ws string \",\" ws")
         append(" \"\\\"category\\\"\" ws \":\" ws category \"}\"")
         append("\n")
 
-        // 自由文本（商家名、订单状态）：CJK + ASCII 可打印，禁止裸引号与裸反斜杠
+        // 自由文本（商家名）：CJK + ASCII 可打印，禁止裸引号与裸反斜杠
         append("string ::= \"\\\"\" ( [^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\\\"\" | \"\\\\\\\\\" | \"\\\\n\" | \"\\\\t\" )* \"\\\"\"\n")
         append("merchant ::= string\n")
 
         // 金额：非负数字，最多两位小数
         append("amount ::= [0-9]+ (\".\" [0-9] [0-9]?)?\n")
 
-        // 币种与类别：枚举字面量
-        append("currency ::=")
-        CURRENCIES.joinTo(this, " | ") { "\"\\\"$it\\\"\"" }
-        append("\n")
-
+        // 类别：枚举字面量
         append("category ::=")
         schema.categoryEnum.joinTo(this, " | ") { "\"\\\"$it\\\"\"" }
         append("\n")
 
-        // 日期：YYYY-MM-DD[ HH:MM:SS]，月/日/时/分/秒带范围约束（0 开头或 1-9 开头组合）
-        append("date ::= \"\\\"\" year \"-\" month \"-\" day (\" \" hour \":\" minute \":\" second)? \"\\\"\"\n")
+        // 日期：YYYY-MM-DD（票 07 提速：只到天，时/分/秒不再让模型生成）
+        append("date ::= \"\\\"\" year \"-\" month \"-\" day \"\\\"\"\n")
         append("year ::= [0-9] [0-9] [0-9] [0-9]\n")
         append("month ::= \"0\" [1-9] | \"1\" [0-2]\n")
         append("day ::= \"0\" [1-9] | [1-2] [0-9] | \"3\" [0-1]\n")
-        append("hour ::= [01] [0-9] | \"2\" [0-3]\n")
-        append("minute ::= [0-5] [0-9]\n")
-        append("second ::= [0-5] [0-9]\n")
-
-        // 口径枚举
-        append("dateSource ::= \"\\\"payment_time\\\"\" | \"\\\"order_time\\\"\"\n")
 
         // ws：GBNF 标准空白
         append("ws ::= [ \\t\\n]*\n")
     }.trimEnd()
-
-    private val CURRENCIES = listOf("CNY", "USD", "EUR", "JPY", "GBP", "HKD", "TWD", "KRW", "OTHER")
 
     /**
      * OCR 路线专用：把 date 规则替换为「候选清单字面量二选一」（清单为空或不含当日候选时
@@ -66,5 +51,78 @@ object GrammarGenerator {
         val alternatives = candidates.joinToString(" | ") { "\"\\\"$it\\\"\"" }
         val newRule = "date ::= $alternatives | \"\\\"\\\"\""
         return grammar.lines().joinToString("\n") { if (it == dateRule) newRule else it }
+    }
+
+    /**
+     * GBNF → JSON Schema 转译（LiteRT-LM ResponseFormat/LLGuidance 约束用，票 13/14）。
+     * 本仓 Draft 契约专用，非通用转换器：
+     * 1. date 规则是 [withDateAlternatives] 注入的候选清单（行内含 `|`）时，转 datePaid enum，
+     *    并保留清单自带的空串兜底选项（prompt 口径：无付款时间时 datePaid 填空串）；
+     * 2. date 规则是原始范围规则（行内无 `|`）时，datePaid 必须为自由 string——
+     *    范围规则文本内含裸引号字符，误当候选解析会产出非法 schema
+     *    （票 07 真机回归：无日期截图触发 Gson "Unterminated array"，该图提取固定失败）；
+     * 3. category 枚举从规则行提取；契约 4 字段（merchant/amountPaid/datePaid/category）。
+     */
+    fun toJsonSchema(grammar: String): String {
+        val dateLine = grammar.lineSequence().firstOrNull { it.startsWith("date ::=") }
+        val dateCandidates = dateLine
+            ?.takeIf { it.contains('|') }
+            ?.removePrefix("date ::=")
+            ?.split("|")
+            ?.map(::stripGbnfQuotes)
+            ?.filter { it.isNotEmpty() }
+            ?.toList()
+            ?: emptyList()
+
+        fun enumFrom(ruleName: String): List<String> {
+            val line = grammar.lineSequence().firstOrNull { it.startsWith("$ruleName ::=") } ?: return emptyList()
+            return line.removePrefix("$ruleName ::=").split("|").map(::stripGbnfQuotes).filter { it.isNotEmpty() }
+        }
+
+        val categories = enumFrom("category")
+
+        fun enumClause(name: String, values: List<String>, fallbackType: String = "string"): String =
+            if (values.isEmpty()) {
+                "\"$name\":{\"type\":\"$fallbackType\"}"
+            } else {
+                val enumItems = values.joinToString(",") { v -> "\"" + v + "\"" }
+                "\"$name\":{\"type\":\"string\",\"enum\":[$enumItems]}"
+            }
+
+        // datePaid：有候选时含空串选项（对齐 GBNF 的 "" 兜底）；无候选时自由 string
+        val datePaidValues = if (dateCandidates.isEmpty()) emptyList() else listOf("") + dateCandidates
+
+        return buildString {
+            append("{")
+            append("\"type\":\"object\",")
+            append("\"properties\":{")
+            append("\"merchant\":{\"type\":\"string\"},")
+            append("\"amountPaid\":{\"type\":\"number\"},")
+            append(enumClause("datePaid", datePaidValues)).append(",")
+            append(enumClause("category", categories))
+            append("},")
+            append("\"required\":[\"merchant\",\"amountPaid\",\"datePaid\",\"category\"],")
+            append("\"additionalProperties\":false")
+            append("}")
+        }
+    }
+
+    /**
+     * 剥 GBNF 字符串字面量的引号，迭代至裸值。备选字面量是双层形态 `"\"CNY\""`
+     * （普通引号包裹 GBNF 转义引号），只剥一层会把 `"CNY"`（带引号）当枚举值——
+     * 票 13 的「LLGuidance enum 双重编码输出」quirk 即源于此，schema 修对后出口清洗只是兜底。
+     */
+    private fun stripGbnfQuotes(token: String): String {
+        var t = token.trim()
+        var changed = true
+        while (changed && t.length >= 2) {
+            changed = false
+            if (t.startsWith("\"") && t.endsWith("\"")) {
+                t = t.substring(1, t.length - 1); changed = true
+            } else if (t.startsWith("\\\"") && t.endsWith("\\\"")) {
+                t = t.substring(2, t.length - 2); changed = true
+            }
+        }
+        return t
     }
 }
