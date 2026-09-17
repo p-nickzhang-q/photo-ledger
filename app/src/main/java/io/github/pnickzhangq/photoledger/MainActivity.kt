@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -65,6 +66,7 @@ import io.github.pnickzhangq.photoledger.ui.EntryForm
 import io.github.pnickzhangq.photoledger.ui.ImportQueueScreen
 import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
 import io.github.pnickzhangq.photoledger.ui.ManualEntryScreen
+import io.github.pnickzhangq.photoledger.ui.SummaryScreen
 import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.Draft
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +83,7 @@ private sealed class Page {
     data object SmokeTools : Page()
     data object ImportQueue : Page()   // 票 07
     data object CategoryManage : Page() // 票 08
+    data object Summary : Page()        // 票 09
 }
 
 class MainActivity : ComponentActivity() {
@@ -256,6 +259,11 @@ class MainActivity : ComponentActivity() {
         val categoryNames = categoryEntities.map { it.name }.ifEmpty { DEFAULT_CATEGORIES }
         // 类别页新增对话框状态（FAB 触发，hoist 到此以便 FAB 与屏幕共用）
         var showAddCategoryDialog by remember { mutableStateOf(false) }
+        // 票 09：汇总数据（当月 = 今天所在月份；remember 固定 Flow 实例避免重组重挂）
+        val monthTotals by repo.monthTotals.collectAsState(initial = emptyList())
+        val currentMonth = remember { java.time.LocalDate.now().toString().take(7) }
+        val currentCategoryTotals by remember(currentMonth) { repo.categoryTotals(currentMonth) }
+            .collectAsState(initial = emptyList())
 
         // 系统返回手势/按键：非根页逐页回退，根页不拦截（系统默认退出）
         BackHandler(enabled = pageStack.size > 1) { goBack() }
@@ -268,6 +276,7 @@ class MainActivity : ComponentActivity() {
             is Page.Confirm -> "确认入账"
             is Page.Detail -> "账目详情"
             is Page.CategoryManage -> "类别管理"
+            is Page.Summary -> "汇总"
             is Page.SmokeTools -> "开发工具"
         }
 
@@ -292,6 +301,9 @@ class MainActivity : ComponentActivity() {
                                 pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                             }) {
                                 Icon(Icons.Filled.PhotoLibrary, contentDescription = "导入截图")
+                            }
+                            IconButton(onClick = { navigate(Page.Summary) }) {
+                                Icon(Icons.Filled.PieChart, contentDescription = "汇总")
                             }
                             IconButton(onClick = { navigate(Page.CategoryManage) }) {
                                 Icon(Icons.Filled.Category, contentDescription = "类别管理")
@@ -360,6 +372,11 @@ class MainActivity : ComponentActivity() {
                         onDelete = { id, _ ->
                             lifecycleScope.launch { repo.deleteCategory(id) }
                         },
+                    )
+                    is Page.Summary -> SummaryScreen(
+                        monthTotals = monthTotals,
+                        categoryTotals = currentCategoryTotals,
+                        currentMonth = currentMonth,
                     )
                     is Page.Detail -> {
                         val entry = entries.firstOrNull { it.id == p.entryId }

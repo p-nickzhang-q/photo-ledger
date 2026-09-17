@@ -60,6 +60,14 @@ class LedgerRepository(
 
     val entries: Flow<List<Entry>> = dao.observeAll()
 
+    // ---- 汇总（票 09，只读）----
+
+    /** 各月实付款合计（月倒序）。 */
+    val monthTotals: Flow<List<MonthTotal>> = dao.observeMonthTotals()
+
+    /** 某月各类别实付款合计（金额倒序，含「其他」）。 */
+    fun categoryTotals(month: String): Flow<List<CategoryTotal>> = dao.observeCategoryTotals(month)
+
     /** 类别体系（票 08）：管理页与全 App 注入（提取 prompt/快选/编辑下拉）。 */
     val categories: Flow<List<CategoryEntity>> = categoryDao.observeAll()
 
