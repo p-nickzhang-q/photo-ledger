@@ -215,16 +215,17 @@ class ImportQueueTest {
     // ---- 确认入账（队列页直接保存，不经编辑页） ----
 
     @Test
-    fun `确认入账——项标 Confirmed 保留 Draft 摘要且同图不再可入队`() = runTest {
+    fun `全部入账——项标 Confirmed 保留 Draft 摘要且同图不再可入队`() = runTest {
         val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(draftA))))
         val queue = queueWith(fake)
         queue.enqueue(img1, "a.png")
         queue.runPending()
 
-        queue.markConfirmed(queue.items.value[0])
+        queue.confirmAll(queue.items.value[0])
 
         val confirmed = queue.items.value[0].state as ImportState.Confirmed
         assertEquals(listOf(draftA), confirmed.drafts)
+        assertEquals(1, db.entryDao().count())
 
         // 同一张图再来：哈希入队时已记，直接 Duplicate（提取过的 Done 项不会被重复提取）
         queue.enqueue(img1, "a-again.png")
@@ -232,15 +233,82 @@ class ImportQueueTest {
     }
 
     @Test
-    fun `确认失败回滚场景不存在——Confirmed 项再 markConfirmed 无变化`() = runTest {
+    fun `Confirmed 项再 confirmAll 无变化——幂等`() = runTest {
         val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(draftA))))
         val queue = queueWith(fake)
         queue.enqueue(img1, "a.png")
         queue.runPending()
-        queue.markConfirmed(queue.items.value[0])
+        queue.confirmAll(queue.items.value[0])
 
-        // 只认 Done → Confirmed 转换：重复调用不破坏状态（幂等）
-        queue.markConfirmed(queue.items.value[0])
+        // 只认 Done 的确认：重复调用不破坏状态，也不重复落库
+        assertEquals(emptyList<Draft>(), queue.confirmAll(queue.items.value[0]))
         assertTrue(queue.items.value[0].state is ImportState.Confirmed)
+        assertEquals(1, db.entryDao().count())
+    }
+
+    // ---- 一图多单逐条确认（票 07 扩展位启用） ----
+
+    @Test
+    fun `一图多单——逐条确认保持 Done 全部确认后转 Confirmed`() = runTest {
+        val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(draftA, draftB))))
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png")
+        queue.runPending()
+        val item = queue.items.value[0]
+        assertEquals(0, db.entryDao().count())
+
+        queue.confirmDraft(item, 0)
+        val partial = queue.items.value[0].state as ImportState.Done
+        assertEquals(setOf(0), partial.confirmed)
+        assertEquals(1, db.entryDao().count())
+
+        queue.confirmDraft(item, 1)
+        assertTrue(queue.items.value[0].state is ImportState.Confirmed)
+        assertEquals(2, db.entryDao().count())
+        // 落库内容与下标对应（顺序不乱）
+        val entries = db.entryDao().observeAll().first()
+        assertEquals(listOf(draftB.amountPaid, draftA.amountPaid), entries.map { it.amountPaid })
+    }
+
+    @Test
+    fun `一图多单——全部入账一次落库所有单`() = runTest {
+        val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(draftA, draftB))))
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png")
+        queue.runPending()
+
+        val confirmedDrafts = queue.confirmAll(queue.items.value[0])
+
+        assertEquals(listOf(draftA, draftB), confirmedDrafts)
+        assertTrue(queue.items.value[0].state is ImportState.Confirmed)
+        assertEquals(2, db.entryDao().count())
+    }
+
+    @Test
+    fun `越界与重复确认返回 null 且不重复落库`() = runTest {
+        val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(draftA))))
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png")
+        queue.runPending()
+        val item = queue.items.value[0]
+
+        assertEquals(null, queue.confirmDraft(item, 5))          // 越界
+        assertEquals(null, queue.confirmDraft(item, -1))         // 越界
+        assertEquals(draftA, queue.confirmDraft(item, 0))
+        assertEquals(null, queue.confirmDraft(item, 0))          // 已确认
+        assertEquals(1, db.entryDao().count())
+    }
+
+    @Test
+    fun `无日期草稿确认时自动填导入当天`() = runTest {
+        val noDate = draftA.copy(datePaid = "")
+        val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(noDate))))
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png")
+        queue.runPending()
+
+        val confirmed = queue.confirmAll(queue.items.value[0]).single()
+        assertEquals(java.time.LocalDate.now().toString(), confirmed.datePaid)
+        assertEquals(java.time.LocalDate.now().toString(), db.entryDao().observeAll().first().single().datePaid)
     }
 }

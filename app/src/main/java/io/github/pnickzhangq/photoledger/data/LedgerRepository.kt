@@ -26,9 +26,16 @@ class PhotoStore(private val rootDir: File) {
     suspend fun save(original: ByteArray?, thumb: Bitmap?): Pair<String?, String?> =
         withContext(Dispatchers.IO) {
             if (original == null) return@withContext null to null
+            // 一图多单确认（票 07 扩展）会毫秒级连续落盘：时间戳撞名时追加序号，避免互相覆盖
             val stamp = System.currentTimeMillis()
-            val photo = File(photosDir, "$stamp.png")
-            val thumbFile = File(thumbsDir, "$stamp.png")
+            var name = "$stamp.png"
+            var seq = 0
+            while (photosDir.resolve(name).exists() || thumbsDir.resolve(name).exists()) {
+                seq++
+                name = "$stamp-$seq.png"
+            }
+            val photo = File(photosDir, name)
+            val thumbFile = File(thumbsDir, name)
             photo.writeBytes(original)
             thumb?.let { t ->
                 thumbFile.outputStream().use { t.compress(Bitmap.CompressFormat.PNG, 90, it) }

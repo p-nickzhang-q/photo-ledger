@@ -25,13 +25,19 @@ sealed class ImportState {
     data object Pending : ImportState()
     data object Processing : ImportState()
 
-    /** 提取成功，待确认（drafts 单 v1 契约取首个，列表保留多单扩展位）。 */
-    data class Done(val drafts: List<Draft>) : ImportState()
+    /**
+     * 提取成功，待确认。一图多单时 drafts 多条；confirmed 记录已入账的下标——
+     * 逐单确认（全部确认后转 Confirmed）。
+     */
+    data class Done(
+        val drafts: List<Draft>,
+        val confirmed: Set<Int> = emptySet(),
+    ) : ImportState()
 
     /** 去重命中：这张已导入过（同批或已入库），不重复成账。 */
     data object Duplicate : ImportState()
 
-    /** 已确认入账（队列页直接保存，不经编辑页；要改字段到账目详情）。保留 drafts 供列表展示。 */
+    /** 全部单已确认入账（要改字段到账目详情）。保留 drafts 供列表展示。 */
     data class Confirmed(val drafts: List<Draft>) : ImportState()
 
     /** 提取失败：原因上屏，截图字节保留（item.bytes）供手工成 Entry。 */
@@ -139,18 +145,44 @@ class ImportQueue(
     }
 
     /**
-     * 确认入账完成：项标 [ImportState.Confirmed]（保留 Draft 摘要展示，按钮消失）。
-     * 哈希在入队时已记 importedHashes，同图不会再次入队；照片落盘由 repo.confirm 完成。
+     * 确认单条入账（一图多单逐单确认）：drafts[index] 落库。
+     * 无日期草稿按导入当天入账（策略在队列层，S2 可测）。
+     * 返回入账的 Draft；状态非 Done / 下标越界 / 已确认过返回 null。
      */
-    suspend fun markConfirmed(item: ImportItem) {
-        mutex.withLock {
-            _items.value = _items.value.toMutableList().also { list ->
-                val idx = list.indexOfFirst { it.hash == item.hash && it.state is ImportState.Done }
-                if (idx >= 0) {
-                    val done = list[idx].state as ImportState.Done
-                    list[idx] = list[idx].copy(state = ImportState.Confirmed(done.drafts))
-                }
-            }
+    suspend fun confirmDraft(item: ImportItem, index: Int): Draft? = mutex.withLock {
+        val idx = _items.value.indexOfFirst { it.hash == item.hash }
+        if (idx < 0) null else confirmLocked(idx, index)
+    }
+
+    /** 该项全部未确认单一次入账，返回本次入账的 Draft 列表（无可确认单返回空）。 */
+    suspend fun confirmAll(item: ImportItem): List<Draft> = mutex.withLock {
+        val idx = _items.value.indexOfFirst { it.hash == item.hash }
+        if (idx < 0) return emptyList()
+        val state = _items.value[idx].state as? ImportState.Done ?: return emptyList()
+        state.drafts.indices.mapNotNull { confirmLocked(idx, it) }
+    }
+
+    /**
+     * 单条确认的落库 + 状态推进（调用方须持锁；repo.confirm 在锁内串行执行，
+     * 防止两次快速点击读到过期 confirmed 集合互相覆盖）。
+     */
+    private suspend fun confirmLocked(idx: Int, index: Int): Draft? {
+        val state = _items.value[idx].state as? ImportState.Done ?: return null
+        if (index !in state.drafts.indices || index in state.confirmed) return null
+        val draft = state.drafts[index]
+        val effective = if (draft.datePaid.isBlank()) {
+            draft.copy(datePaid = java.time.LocalDate.now().toString())
+        } else {
+            draft
         }
+        repo.confirm(draft = effective, photoBytes = _items.value[idx].bytes)
+        val confirmed = state.confirmed + index
+        val newState = if (confirmed.size == state.drafts.size) {
+            ImportState.Confirmed(state.drafts)
+        } else {
+            state.copy(confirmed = confirmed)
+        }
+        _items.value = _items.value.toMutableList().also { it[idx] = it[idx].copy(state = newState) }
+        return effective
     }
 }

@@ -47,7 +47,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import io.github.pnickzhangq.photoledger.data.Entry
 import io.github.pnickzhangq.photoledger.data.ImportQueue
-import io.github.pnickzhangq.photoledger.data.ImportState
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
 import io.github.pnickzhangq.photoledger.data.LedgerRepository
 import io.github.pnickzhangq.photoledger.data.PhotoStore
@@ -335,6 +334,7 @@ class MainActivity : ComponentActivity() {
                         items = importQueue?.items?.collectAsState()?.value.orEmpty(),
                         onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onConfirmDraft = ::confirmFromQueue,
+                        onConfirmAll = ::confirmAllFromQueue,
                     )
                     is Page.Confirm -> DraftConfirmScreen(
                         draft = p.draft,
@@ -507,18 +507,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 队列 Done 项 → 直接入账（不经编辑页）。无日期截图（OCR 小角标没读出）按导入当天入账。 */
-    private fun confirmFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem) {
-        val draft = (item.state as? ImportState.Done)?.drafts?.firstOrNull() ?: return
-        val effective = if (draft.datePaid.isBlank()) {
-            draft.copy(datePaid = java.time.LocalDate.now().toString())
-        } else {
-            draft
-        }
-        lifecycleScope.launch {
-            repo.confirm(draft = effective, photoBytes = item.bytes)
-            ensureImportQueue().markConfirmed(item)
-        }
+    /** 队列 Done 项逐单入账（一图多单）。无日期草稿由队列层自动填导入当天。 */
+    private fun confirmFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem, index: Int) {
+        lifecycleScope.launch { ensureImportQueue().confirmDraft(item, index) }
+    }
+
+    /** 队列 Done 项全部入账。 */
+    private fun confirmAllFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem) {
+        lifecycleScope.launch { ensureImportQueue().confirmAll(item) }
     }
 
     // ---- 冒烟链路（票04/05，协程）----
