@@ -1,6 +1,7 @@
 // 票 07：导入队列屏。逐项显示截图名与状态（排队/提取中/成功/失败/重复），
-// 实时刷新（StateFlow）。Done 项点击进确认流；Failed 项给「手工录入」入口。
+// 实时刷新（StateFlow）。Done 项点击进确认流；Failed 项展示原因（重试 = 重新导入同图）。
 // 导航重构：顶栏与返回由外层 AppScaffold 统一供给；空态给导入 CTA（可直接进入本页）。
+// 手工记账已删（UI 收敛为「导入即入口」），Failed 项不再提供手工录入按钮。
 package io.github.pnickzhangq.photoledger.ui
 
 import androidx.compose.foundation.background
@@ -57,7 +58,6 @@ fun ImportQueueScreen(
     items: List<ImportItem>,
     onImportFromGallery: () -> Unit,
     onConfirmDraft: (ImportItem) -> Unit,
-    onManualEntry: (ImportItem) -> Unit,
 ) {
     var previewItem by remember { mutableStateOf<ImportItem?>(null) }
     if (items.isEmpty()) {
@@ -81,7 +81,6 @@ fun ImportQueueScreen(
                 ImportItemCard(
                     item,
                     onConfirmDraft,
-                    onManualEntry,
                     onImageClick = { previewItem = item },
                 )
             }
@@ -103,7 +102,6 @@ fun ImportQueueScreen(
 private fun ImportItemCard(
     item: ImportItem,
     onConfirmDraft: (ImportItem) -> Unit,
-    onManualEntry: (ImportItem) -> Unit,
     onImageClick: () -> Unit,
 ) {
     Card(
@@ -169,9 +167,6 @@ private fun ImportItemCard(
                     if ((item.state as ImportState.Done).drafts.isNotEmpty()) {
                         Button(onClick = { onConfirmDraft(item) }) { Text("确认") }
                     }
-                }
-                is ImportState.Failed -> {
-                    OutlinedButton(onClick = { onManualEntry(item) }) { Text("手工录入") }
                 }
                 else -> {}
             }

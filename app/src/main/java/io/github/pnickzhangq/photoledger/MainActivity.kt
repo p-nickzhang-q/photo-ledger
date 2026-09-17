@@ -23,8 +23,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Category
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Settings
@@ -65,7 +65,6 @@ import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
 import io.github.pnickzhangq.photoledger.ui.EntryForm
 import io.github.pnickzhangq.photoledger.ui.ImportQueueScreen
 import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
-import io.github.pnickzhangq.photoledger.ui.ManualEntryScreen
 import io.github.pnickzhangq.photoledger.ui.SummaryScreen
 import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.Draft
@@ -77,7 +76,6 @@ import java.io.File
 /** 页面导航（无路由库，sealed class 足够本规模）。 */
 private sealed class Page {
     data object Ledger : Page()
-    data object ManualAdd : Page()
     data class Confirm(val draft: Draft, val photoPath: String?) : Page()
     data class Detail(val entryId: Long) : Page()
     data object SmokeTools : Page()
@@ -268,11 +266,10 @@ class MainActivity : ComponentActivity() {
         // 系统返回手势/按键：非根页逐页回退，根页不拦截（系统默认退出）
         BackHandler(enabled = pageStack.size > 1) { goBack() }
 
-        // 顶栏三段式统一：非根页 [← | 页面名 | —]，根页 [照片记账 | 队列·导入·类别·工具]
+        // 顶栏三段式统一：非根页 [← | 页面名 | —]，根页 [照片记账 | 队列·汇总·类别·工具]
         val pageTitle = when (current) {
             is Page.Ledger -> "照片记账"
             is Page.ImportQueue -> "导入队列"
-            is Page.ManualAdd -> "手工记账"
             is Page.Confirm -> "确认入账"
             is Page.Detail -> "账目详情"
             is Page.CategoryManage -> "类别管理"
@@ -297,11 +294,6 @@ class MainActivity : ComponentActivity() {
                             IconButton(onClick = { navigate(Page.ImportQueue) }) {
                                 Icon(Icons.Filled.Queue, contentDescription = "导入队列")
                             }
-                            IconButton(onClick = {
-                                pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }) {
-                                Icon(Icons.Filled.PhotoLibrary, contentDescription = "导入截图")
-                            }
                             IconButton(onClick = { navigate(Page.Summary) }) {
                                 Icon(Icons.Filled.PieChart, contentDescription = "汇总")
                             }
@@ -317,9 +309,11 @@ class MainActivity : ComponentActivity() {
             },
             floatingActionButton = {
                 when (current) {
-                    // 词汇统一：FAB = 新建（流水页→手工记账；类别页→新增类别，列表再长也在拇指边）
-                    is Page.Ledger -> FloatingActionButton(onClick = { navigate(Page.ManualAdd) }) {
-                        Icon(Icons.Filled.Add, contentDescription = "手工记账")
+                    // 主操作：相册选取照片进导入队列（手工记账已删，导入即全部入口）
+                    is Page.Ledger -> FloatingActionButton(onClick = {
+                        pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }) {
+                        Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "导入截图")
                     }
                     is Page.CategoryManage -> FloatingActionButton(onClick = { showAddCategoryDialog = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "新增类别")
@@ -333,7 +327,7 @@ class MainActivity : ComponentActivity() {
                     is Page.Ledger -> LedgerListScreen(
                         entries = entries,
                         thumbDir = File(File(filesDir, "ledger"), "thumbs"),
-                        emptyHint = "还没有账目\n\n从相册导入订单截图开始，\n或点右下角 ➕ 手工记账",
+                        emptyHint = "还没有账目\n\n点右下角 ➕ 从相册导入订单截图",
                         onEntryClick = { navigate(Page.Detail(it.id)) },
                         onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     )
@@ -341,12 +335,6 @@ class MainActivity : ComponentActivity() {
                         items = importQueue?.items?.collectAsState()?.value.orEmpty(),
                         onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onConfirmDraft = ::confirmFromQueue,
-                        onManualEntry = ::manualFromQueue,
-                    )
-                    is Page.ManualAdd -> ManualEntryScreen(
-                        categories = categoryNames,
-                        onSave = { form -> lifecycleScope.launch { saveManual(form) } },
-                        onCancel = ::goBack,
                     )
                     is Page.Confirm -> DraftConfirmScreen(
                         draft = p.draft,
@@ -426,17 +414,6 @@ class MainActivity : ComponentActivity() {
         )
         lastPhotoBytes = null
         backToRoot()   // 确认流程终点：回流水列表
-    }
-
-    private suspend fun saveManual(form: EntryForm) {
-        repo.addManual(
-            merchant = form.merchant,
-            amountPaid = form.amountPaid.toDoubleOrNull() ?: 0.0,
-            datePaid = form.datePaid,
-            category = form.category,
-            orderStatus = form.orderStatus,
-        )
-        goBack()   // 从队列进来回队列，从流水进来回流水
     }
 
     private suspend fun saveEdit(entry: Entry, form: EntryForm) {
@@ -542,11 +519,6 @@ class MainActivity : ComponentActivity() {
             repo.confirm(draft = effective, photoBytes = item.bytes)
             ensureImportQueue().markConfirmed(item)
         }
-    }
-
-    /** 队列 Failed 项 → 手工录入（截图保留但 v1 手工表单无图；放弃则队列项仍在）。 */
-    private fun manualFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem) {
-        navigate(Page.ManualAdd)
     }
 
     // ---- 冒烟链路（票04/05，协程）----
