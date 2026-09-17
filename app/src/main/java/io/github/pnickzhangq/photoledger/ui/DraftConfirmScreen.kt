@@ -5,6 +5,8 @@ package io.github.pnickzhangq.photoledger.ui
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,6 +43,7 @@ data class DraftForm(
     var orderStatus: String,
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DraftConfirmScreen(
     draft: Draft,
@@ -88,21 +91,17 @@ fun DraftConfirmScreen(
             label = { Text("订单状态") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
 
-        // 类别：文本框 + 快速选择（完整类别体系属票 08）
+        // 类别：文本框 + 快选（类别列表来自类别体系，票 08；FlowRow 适配任意数量）
         OutlinedTextField(
             value = category, onValueChange = { category = it },
             label = { Text("类别") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        Row(
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            categories.take(4).forEach { c ->
-                OutlinedButton(onClick = { category = c }) { Text(c, style = MaterialTheme.typography.labelMedium) }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            categories.drop(4).forEach { c ->
+            categories.forEach { c ->
                 OutlinedButton(onClick = { category = c }) { Text(c, style = MaterialTheme.typography.labelMedium) }
             }
         }

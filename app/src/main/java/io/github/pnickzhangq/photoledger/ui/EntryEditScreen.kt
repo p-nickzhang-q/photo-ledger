@@ -3,6 +3,8 @@ package io.github.pnickzhangq.photoledger.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,6 +44,7 @@ data class EntryForm(
     var orderStatus: String,
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EntryEditScreen(
     entry: Entry,
@@ -94,6 +97,15 @@ fun EntryEditScreen(
             value = category, onValueChange = { category = it },
             label = { Text("类别") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            categories.forEach { c ->
+                OutlinedButton(onClick = { category = c }) { Text(c, style = MaterialTheme.typography.labelMedium) }
+            }
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Button(

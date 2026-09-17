@@ -1,13 +1,16 @@
 // 票 06：账目库仓储。Draft→Entry 确认流的领域逻辑（S3 接缝测试对象）：
 // 确认才落库、放弃不留痕、手工空表单可成 Entry、删除可选连图删。
+// 票 08：+类别体系（增删改、删类别其下 Entry 归「其他」、重命名级联）。
 // UI 只调本层，不直接碰 DAO——保证「放弃 = 什么都不发生」在仓库层可测。
 package io.github.pnickzhangq.photoledger.data
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import androidx.room.withTransaction
 import com.pnickzhangq.photoledger.engine.DateSource
 import com.pnickzhangq.photoledger.engine.Draft
+import com.pnickzhangq.photoledger.engine.FALLBACK_CATEGORY
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -46,12 +49,69 @@ class PhotoStore(private val rootDir: File) {
 }
 
 class LedgerRepository(
-    private val dao: EntryDao,
+    /** 数据库本体（类别增删改需要 withTransaction 跨表原子性）。 */
+    private val db: LedgerDatabase,
     /** 照片存储（票 07 去重需要 photosDir；其余场景仍走本类方法）。 */
     val photoStore: PhotoStore,
 ) {
 
+    private val dao = db.entryDao()
+    private val categoryDao = db.categoryDao()
+
     val entries: Flow<List<Entry>> = dao.observeAll()
+
+    /** 类别体系（票 08）：管理页与全 App 注入（提取 prompt/快选/编辑下拉）。 */
+    val categories: Flow<List<CategoryEntity>> = categoryDao.observeAll()
+
+    /** 类别名称列表（提取器逐张实时取——管理页改完立即生效，无需重建管线）。 */
+    suspend fun categoryNames(): List<String> = categoryDao.list().map { it.name }
+
+    /**
+     * 新增类别：尾部追加。重名（含与内置冲突）由唯一索引拒绝，转 IllegalArgumentException。
+     * 类别名会注入 prompt 与 grammar（GBNF 字符串字面量/JSON Schema enum），引号与反斜杠会破坏转义，入口即拒。
+     */
+    suspend fun addCategory(name: String): Long = withContext(Dispatchers.IO) {
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty()) { "类别名不能为空" }
+        require(!trimmed.any { it == '"' || it == '\\' }) { "类别名不能包含引号或反斜杠" }
+        try {
+            val nextOrder = (categoryDao.list().maxOfOrNull { it.sortOrder } ?: -1) + 1
+            categoryDao.insert(CategoryEntity(name = trimmed, sortOrder = nextOrder))
+        } catch (e: android.database.sqlite.SQLiteConstraintException) {
+            throw IllegalArgumentException("类别「$trimmed」已存在", e)
+        }
+    }
+
+    /**
+     * 重命名类别：级联更新其下 Entry 引用（否则 Entry 里留旧字符串成悬空名）。
+     * 「其他」不可改名——删类别归「其他」的兜底约定以其名称为准。
+     */
+    suspend fun renameCategory(id: Long, newName: String) = withContext(Dispatchers.IO) {
+        val trimmed = newName.trim()
+        require(trimmed.isNotEmpty()) { "类别名不能为空" }
+        val old = categoryDao.byId(id) ?: return@withContext
+        require(old.name != FALLBACK_CATEGORY) { "「其他」不可重命名" }
+        try {
+            db.withTransaction {
+                categoryDao.update(old.copy(name = trimmed))
+                categoryDao.reassignEntries(oldName = old.name, newName = trimmed)
+            }
+        } catch (e: android.database.sqlite.SQLiteConstraintException) {
+            throw IllegalArgumentException("类别「$trimmed」已存在", e)
+        }
+    }
+
+    /**
+     * 删除类别：其下 Entry 全部归「其他」（不丢账，S3 验收项）。「其他」本身不可删。
+     */
+    suspend fun deleteCategory(id: Long) = withContext(Dispatchers.IO) {
+        val target = categoryDao.byId(id) ?: return@withContext
+        require(target.name != FALLBACK_CATEGORY) { "「其他」不可删除" }
+        db.withTransaction {
+            categoryDao.reassignEntries(oldName = target.name, newName = FALLBACK_CATEGORY)
+            categoryDao.delete(target)
+        }
+    }
 
     /**
      * 确认 Draft → 落库 Entry（CONTEXT.md「Draft」：确认后才成为 Entry）。

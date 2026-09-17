@@ -61,7 +61,7 @@ class ImportQueueTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = LedgerDatabase.inMemory(context)
         photoRoot = File(context.cacheDir, "import-test-${System.nanoTime()}")
-        repo = LedgerRepository(db.entryDao(), PhotoStore(photoRoot))
+        repo = LedgerRepository(db, PhotoStore(photoRoot))
     }
 
     @After

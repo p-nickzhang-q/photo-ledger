@@ -1,5 +1,6 @@
 package com.pnickzhangq.photoledger.cli
 
+import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.ExtractionEngine
 import com.pnickzhangq.photoledger.engine.GateScoring
 import com.pnickzhangq.photoledger.engine.OcrClient

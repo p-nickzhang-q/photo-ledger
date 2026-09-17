@@ -1,5 +1,6 @@
 // 票 07：导入队列屏。逐项显示截图名与状态（排队/提取中/成功/失败/重复），
 // 实时刷新（StateFlow）。Done 项点击进确认流；Failed 项给「手工录入」入口。
+// 导航重构：顶栏与返回由外层 AppScaffold 统一供给；空态给导入 CTA（可直接进入本页）。
 package io.github.pnickzhangq.photoledger.ui
 
 import androidx.compose.foundation.background
@@ -17,7 +18,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
@@ -26,14 +26,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,38 +52,31 @@ import coil.request.ImageRequest
 import io.github.pnickzhangq.photoledger.data.ImportItem
 import io.github.pnickzhangq.photoledger.data.ImportState
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImportQueueScreen(
     items: List<ImportItem>,
-    onBack: () -> Unit,
+    onImportFromGallery: () -> Unit,
     onConfirmDraft: (ImportItem) -> Unit,
     onManualEntry: (ImportItem) -> Unit,
 ) {
     var previewItem by remember { mutableStateOf<ImportItem?>(null) }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("导入队列") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
+    if (items.isEmpty()) {
+        // 空态 = 行动邀请：直达本页（顶栏队列图标）时也能一步开始
+        Column(
+            Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+        ) {
+            Text("队列还空着", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "从相册多选订单截图，或在相册/微信里「分享」到照片记账，\n逐张识别后在这里确认入账。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        },
-    ) { padding ->
-        if (items.isEmpty()) {
-            Column(
-                Modifier.fillMaxSize().padding(padding).padding(32.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("队列空", style = MaterialTheme.typography.titleMedium)
-                Text("从相册多选截图，或在相册/微信里「分享」到照片记账，会进入这里。")
-            }
-            return@Scaffold
+            Button(onClick = onImportFromGallery) { Text("从相册导入截图") }
         }
-        LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+    } else {
+        LazyColumn(Modifier.fillMaxSize()) {
             items(items) { item ->
                 ImportItemCard(
                     item,
@@ -94,6 +84,12 @@ fun ImportQueueScreen(
                     onManualEntry,
                     onImageClick = { previewItem = item },
                 )
+            }
+            item {
+                OutlinedButton(
+                    onClick = onImportFromGallery,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                ) { Text("继续导入") }
             }
         }
     }

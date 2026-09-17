@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,8 +21,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -35,6 +39,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
@@ -51,6 +57,7 @@ import io.github.pnickzhangq.photoledger.ocr.LlamaNative
 import io.github.pnickzhangq.photoledger.ocr.OcrEngine
 import io.github.pnickzhangq.photoledger.ocr.OcrLine
 import io.github.pnickzhangq.photoledger.ocr.OnDevicePipeline
+import io.github.pnickzhangq.photoledger.ui.CategoryManageScreen
 import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
 import io.github.pnickzhangq.photoledger.ui.DraftForm
 import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
@@ -58,6 +65,7 @@ import io.github.pnickzhangq.photoledger.ui.EntryForm
 import io.github.pnickzhangq.photoledger.ui.ImportQueueScreen
 import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
 import io.github.pnickzhangq.photoledger.ui.ManualEntryScreen
+import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.Draft
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -72,6 +80,7 @@ private sealed class Page {
     data class Detail(val entryId: Long) : Page()
     data object SmokeTools : Page()
     data object ImportQueue : Page()   // 票 07
+    data object CategoryManage : Page() // 票 08
 }
 
 class MainActivity : ComponentActivity() {
@@ -80,8 +89,8 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "photoledger-smoke"
         // 票 05 验收：内存门槛。0.6B Q4_K_M 峰值 ~0.5GB + OCR ~20MB + 运行时 ~0.3GB。
         private const val MIN_AVAILABLE_MB = 2048L
-        // 与桌面 CLI DEFAULT_CATEGORIES 同源（零分叉）；票 08 类别体系时迁移共享常量
-        private val CATEGORIES = listOf("餐饮", "购物", "交通", "居住", "医疗", "娱乐", "通讯", "其他")
+        // 票 08：类别体系入库（首启种子 = engine.DEFAULT_CATEGORIES），此常量已移除；
+        // UI 首帧回退用 DEFAULT_CATEGORIES（种子落库前的空窗）。
     }
 
     /** 开发期模型目录（票04）：adb push 到 App 专属外部目录。 */
@@ -90,7 +99,20 @@ class MainActivity : ComponentActivity() {
 
     // ---- 账目库 ----
     private lateinit var repo: LedgerRepository
-    private val page = mutableStateOf<Page>(Page.Ledger)
+
+    // ---- 页栈导航（BackHandler 拦截系统返回逐页回退；根页放行 = 系统默认退出）----
+    private val pageStack = androidx.compose.runtime.mutableStateListOf<Page>(Page.Ledger)
+    private val currentPage: Page get() = pageStack.last()
+    private fun navigate(p: Page) {
+        if (currentPage != p) pageStack.add(p) // 同页不重复压栈（队列页再分享/再导入场景）
+    }
+    private fun goBack() {
+        if (pageStack.size > 1) pageStack.removeAt(pageStack.size - 1)
+    }
+    private fun backToRoot() {
+        pageStack.clear()
+        pageStack.add(Page.Ledger)
+    }
 
     // ---- 导入队列（票 07）——lifecycleScope 下懒建：需要 repo 就绪 ----
     private var importQueue: ImportQueue? = null
@@ -129,7 +151,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         repo = LedgerRepository(
-            LedgerDatabase.get(this).entryDao(),
+            LedgerDatabase.get(this),
             PhotoStore(File(filesDir, "ledger")),
         )
         scanModelDir()
@@ -193,7 +215,7 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "SMOKE_IMPORT bytes=${bytes?.size ?: -1}")
                 if (bytes != null) {
                     val queue = ensureImportQueue()
-                    page.value = Page.ImportQueue
+                    navigate(Page.ImportQueue)
                     queue.enqueue(bytes, "队列测试.png")
                     queue.runPending()
                 }
@@ -227,35 +249,70 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @androidx.compose.runtime.Composable
     private fun AppScaffold() {
-        val current = page.value
+        val current = currentPage
         val entries by repo.entries.collectAsState(initial = emptyList())
+        // 票 08：类别体系入库；名称列表注入全部录入/提取场景（首帧回退内置八类）
+        val categoryEntities by repo.categories.collectAsState(initial = emptyList())
+        val categoryNames = categoryEntities.map { it.name }.ifEmpty { DEFAULT_CATEGORIES }
+        // 类别页新增对话框状态（FAB 触发，hoist 到此以便 FAB 与屏幕共用）
+        var showAddCategoryDialog by remember { mutableStateOf(false) }
+
+        // 系统返回手势/按键：非根页逐页回退，根页不拦截（系统默认退出）
+        BackHandler(enabled = pageStack.size > 1) { goBack() }
+
+        // 顶栏三段式统一：非根页 [← | 页面名 | —]，根页 [照片记账 | 队列·导入·类别·工具]
+        val pageTitle = when (current) {
+            is Page.Ledger -> "照片记账"
+            is Page.ImportQueue -> "导入队列"
+            is Page.ManualAdd -> "手工记账"
+            is Page.Confirm -> "确认入账"
+            is Page.Detail -> "账目详情"
+            is Page.CategoryManage -> "类别管理"
+            is Page.SmokeTools -> "开发工具"
+        }
 
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("照片记账") },
+                    title = { Text(pageTitle) },
+                    navigationIcon = {
+                        if (pageStack.size > 1) {
+                            IconButton(onClick = ::goBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                            }
+                        }
+                    },
                     actions = {
-                        // 票 07：列表页常驻「导入」入口（非空列表也要能进队列）
                         if (current is Page.Ledger) {
+                            // 识别队列直达入口（空队列给可行动的空态，不再只能先导图）
+                            IconButton(onClick = { navigate(Page.ImportQueue) }) {
+                                Icon(Icons.Filled.Queue, contentDescription = "导入队列")
+                            }
                             IconButton(onClick = {
                                 pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                             }) {
                                 Icon(Icons.Filled.PhotoLibrary, contentDescription = "导入截图")
                             }
-                        }
-                        IconButton(onClick = {
-                            page.value = if (current is Page.SmokeTools) Page.Ledger else Page.SmokeTools
-                        }) {
-                            Icon(Icons.Filled.Settings, contentDescription = "工具")
+                            IconButton(onClick = { navigate(Page.CategoryManage) }) {
+                                Icon(Icons.Filled.Category, contentDescription = "类别管理")
+                            }
+                            IconButton(onClick = { navigate(Page.SmokeTools) }) {
+                                Icon(Icons.Filled.Settings, contentDescription = "工具")
+                            }
                         }
                     },
                 )
             },
             floatingActionButton = {
-                if (current is Page.Ledger) {
-                    FloatingActionButton(onClick = { page.value = Page.ManualAdd }) {
+                when (current) {
+                    // 词汇统一：FAB = 新建（流水页→手工记账；类别页→新增类别，列表再长也在拇指边）
+                    is Page.Ledger -> FloatingActionButton(onClick = { navigate(Page.ManualAdd) }) {
                         Icon(Icons.Filled.Add, contentDescription = "手工记账")
                     }
+                    is Page.CategoryManage -> FloatingActionButton(onClick = { showAddCategoryDialog = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = "新增类别")
+                    }
+                    else -> {}
                 }
             },
         ) { padding ->
@@ -265,39 +322,57 @@ class MainActivity : ComponentActivity() {
                         entries = entries,
                         thumbDir = File(File(filesDir, "ledger"), "thumbs"),
                         emptyHint = "还没有账目\n\n从相册导入订单截图开始，\n或点右下角 ➕ 手工记账",
-                        onEntryClick = { page.value = Page.Detail(it.id) },
+                        onEntryClick = { navigate(Page.Detail(it.id)) },
                         onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     )
                     is Page.ImportQueue -> ImportQueueScreen(
                         items = importQueue?.items?.collectAsState()?.value.orEmpty(),
-                        onBack = { page.value = Page.Ledger },
+                        onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onConfirmDraft = ::confirmFromQueue,
                         onManualEntry = ::manualFromQueue,
                     )
                     is Page.ManualAdd -> ManualEntryScreen(
-                        categories = CATEGORIES,
+                        categories = categoryNames,
                         onSave = { form -> lifecycleScope.launch { saveManual(form) } },
-                        onCancel = { page.value = Page.Ledger },
+                        onCancel = ::goBack,
                     )
                     is Page.Confirm -> DraftConfirmScreen(
                         draft = p.draft,
                         photoPath = p.photoPath,
-                        categories = CATEGORIES,
+                        categories = categoryNames,
                         onConfirm = { form -> lifecycleScope.launch { confirmDraft(p, form) } },
-                        onDiscard = { repo.discard(); page.value = Page.Ledger },
+                        onDiscard = { repo.discard(); goBack() },
+                    )
+                    is Page.CategoryManage -> CategoryManageScreen(
+                        categories = categoryEntities,
+                        showAddDialog = showAddCategoryDialog,
+                        onAddDialogDismiss = { showAddCategoryDialog = false },
+                        onAdd = { name, onResult ->
+                            lifecycleScope.launch {
+                                onResult(try { repo.addCategory(name); null } catch (e: Exception) { e.message ?: "添加失败" })
+                            }
+                        },
+                        onRename = { id, newName, onResult ->
+                            lifecycleScope.launch {
+                                onResult(try { repo.renameCategory(id, newName); null } catch (e: Exception) { e.message ?: "重命名失败" })
+                            }
+                        },
+                        onDelete = { id, _ ->
+                            lifecycleScope.launch { repo.deleteCategory(id) }
+                        },
                     )
                     is Page.Detail -> {
                         val entry = entries.firstOrNull { it.id == p.entryId }
                         if (entry == null) {
                             Text("账目不存在（已删除？）", Modifier.padding(16.dp))
-                            OutlinedButton(onClick = { page.value = Page.Ledger }, Modifier.padding(16.dp)) { Text("返回") }
+                            OutlinedButton(onClick = ::goBack, Modifier.padding(16.dp)) { Text("返回") }
                         } else {
                             EntryEditScreen(
                                 entry = entry,
                                 photoDir = File(File(filesDir, "ledger"), "photos"),
-                                categories = CATEGORIES,
+                                categories = categoryNames,
                                 onSave = { form -> lifecycleScope.launch { saveEdit(entry, form) } },
-                                onDelete = { alsoPhoto -> lifecycleScope.launch { repo.delete(entry, alsoPhoto); page.value = Page.Ledger } },
+                                onDelete = { alsoPhoto -> lifecycleScope.launch { repo.delete(entry, alsoPhoto); goBack() } },
                             )
                         }
                     }
@@ -333,7 +408,7 @@ class MainActivity : ComponentActivity() {
             photoBytes = lastPhotoBytes,
         )
         lastPhotoBytes = null
-        page.value = Page.Ledger
+        backToRoot()   // 确认流程终点：回流水列表
     }
 
     private suspend fun saveManual(form: EntryForm) {
@@ -344,7 +419,7 @@ class MainActivity : ComponentActivity() {
             category = form.category,
             orderStatus = form.orderStatus,
         )
-        page.value = Page.Ledger
+        goBack()   // 从队列进来回队列，从流水进来回流水
     }
 
     private suspend fun saveEdit(entry: Entry, form: EntryForm) {
@@ -357,7 +432,7 @@ class MainActivity : ComponentActivity() {
                 orderStatus = form.orderStatus,
             )
         }
-        page.value = Page.Ledger
+        goBack()
     }
 
     // ---- 导入队列（票 07）：相册多选 + 系统分享 → 同一队列 → 确认流 ----
@@ -401,7 +476,8 @@ class MainActivity : ComponentActivity() {
             val w = bmp.width; val h = bmp.height
             bmp.recycle()
 
-            val pipeline = OnDevicePipeline(engine, obtainQueueTransport(), CATEGORIES)
+            // 票 08：逐张实时取当前类别列表（管理页改完，下一张提取即生效）
+            val pipeline = OnDevicePipeline(engine, obtainQueueTransport(), repo.categoryNames())
             when (val r = pipeline.extract(pixels, w, h, fallbackYear = java.time.Year.now().value)) {
                 is io.github.pnickzhangq.photoledger.ocr.ExtractResult.Success ->
                     io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Success(r.drafts)
@@ -419,7 +495,7 @@ class MainActivity : ComponentActivity() {
     private fun enqueueImports(list: List<Pair<Uri, String>>) {
         if (list.isEmpty()) return
         val queue = ensureImportQueue()
-        page.value = Page.ImportQueue
+        navigate(Page.ImportQueue)
         lifecycleScope.launch {
             list.forEach { (uri, name) ->
                 val bytes = withContext(Dispatchers.IO) {
@@ -453,7 +529,7 @@ class MainActivity : ComponentActivity() {
 
     /** 队列 Failed 项 → 手工录入（截图保留但 v1 手工表单无图；放弃则队列项仍在）。 */
     private fun manualFromQueue(item: io.github.pnickzhangq.photoledger.data.ImportItem) {
-        page.value = Page.ManualAdd
+        navigate(Page.ManualAdd)
     }
 
     // ---- 冒烟链路（票04/05，协程）----
@@ -628,7 +704,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         try {
-            val pipeline = OnDevicePipeline(engine, transport, CATEGORIES)
+            val pipeline = OnDevicePipeline(engine, transport, repo.categoryNames())
             val t0 = System.currentTimeMillis()
             when (val r = pipeline.extract(pixels, lastW, lastH, fallbackYear = java.time.Year.now().value)) {
                 is ExtractResult.Success -> {
@@ -640,7 +716,7 @@ class MainActivity : ComponentActivity() {
                     e2eResult.value = r.drafts.joinToString("\n\n") { d -> "⚡ ${d.datePaid}\n¥${d.amountPaid}  ${d.category}\n${d.merchant}" }
                     status.value = "LiteRT 端到端完成：${r.drafts.size} 单，总 ${total}ms（OCR ${r.times.ocrMs}ms / LLM ${r.times.llmMs}ms）"
                     if (r.drafts.isNotEmpty()) {
-                        page.value = Page.Confirm(r.drafts[0], lastPhotoPath)
+                        navigate(Page.Confirm(r.drafts[0], lastPhotoPath))
                     }
                 }
                 is ExtractResult.Failure -> {
@@ -673,7 +749,7 @@ class MainActivity : ComponentActivity() {
         ).also { ocrEngine = it }
 
         status.value = "端到端提取中（约 3-4 分钟）…"
-        val pipeline = OnDevicePipeline(engine, JniLlmTransport({ ctxPtr }), CATEGORIES)
+        val pipeline = OnDevicePipeline(engine, JniLlmTransport({ ctxPtr }), repo.categoryNames())
         val t0 = System.currentTimeMillis()
         when (val r = pipeline.extract(pixels, lastW, lastH, fallbackYear = java.time.Year.now().value)) {
             is ExtractResult.Success -> {
@@ -690,7 +766,7 @@ class MainActivity : ComponentActivity() {
                         val d = r.drafts[0]
                         Log.i(TAG, "SMOKE_E2E_DRAFT[0] datePaid=${d.datePaid} amount=${d.amountPaid} merchant=${d.merchant} category=${d.category}")
                         e2eResult.value = "✅ ${d.datePaid}\n¥${d.amountPaid}  ${d.category}\n${d.merchant}"
-                        page.value = Page.Confirm(d, lastPhotoPath)
+                        navigate(Page.Confirm(d, lastPhotoPath))
                         status.value = "提取完成，请确认入账"
                     }
                     else -> {
@@ -700,7 +776,7 @@ class MainActivity : ComponentActivity() {
                             Log.i(TAG, "SMOKE_E2E_DRAFT[$i] datePaid=${dd.datePaid} amount=${dd.amountPaid} merchant=${dd.merchant} category=${dd.category}")
                         }
                         e2eResult.value = "共 ${r.drafts.size} 单，第一单待确认（其余见 logcat）"
-                        page.value = Page.Confirm(d, lastPhotoPath)
+                        navigate(Page.Confirm(d, lastPhotoPath))
                     }
                 }
             }

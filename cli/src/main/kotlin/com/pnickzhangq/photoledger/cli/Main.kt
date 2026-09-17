@@ -1,5 +1,6 @@
 package com.pnickzhangq.photoledger.cli
 
+import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.ExtractionEngine
 import com.pnickzhangq.photoledger.engine.OcrClient
 import com.pnickzhangq.photoledger.engine.OcrLine
@@ -8,8 +9,6 @@ import com.pnickzhangq.photoledger.engine.llamacpp.LlamaServerTransport
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.system.exitProcess
-
-internal val DEFAULT_CATEGORIES = listOf("餐饮", "购物", "交通", "居住", "医疗", "娱乐", "通讯", "其他")
 
 /** RapidOCR 在专用 venv；桌面约定路径，可通过环境变量覆盖。 */
 internal val OCR_PYTHON = System.getenv("OCR_PYTHON") ?: "${System.getProperty("user.home")}/.ocr-venv/bin/python"
