@@ -114,8 +114,10 @@ class MainActivity : ComponentActivity() {
         pageStack.add(Page.Ledger)
     }
 
-    // ---- 导入队列（票 07）——lifecycleScope 下懒建：需要 repo 就绪 ----
-    private var importQueue: ImportQueue? = null
+    // ---- 导入队列（票 07）——lifecycleScope 下懒建：需要 repo 就绪。
+    // 必须是快照状态：顶栏直达进入队列页时它还是 null，首次导入才创建——
+    // 若为普通变量，Compose 感知不到创建，页面会卡在空态不刷新（真机 bug）。
+    private var importQueue: ImportQueue? by mutableStateOf(null)
     private var importExtractor: ImportQueue.Extractor? = null
 
     // ---- 冒烟 UI 状态 ----
@@ -261,6 +263,11 @@ class MainActivity : ComponentActivity() {
         val currentMonth = remember { java.time.LocalDate.now().toString().take(7) }
         val currentCategoryTotals by remember(currentMonth) { repo.categoryTotals(currentMonth) }
             .collectAsState(initial = emptyList())
+        // 队列订阅放顶层（不能在 when 分支内条件调用 collectAsState——队列懒创建的
+        // null→非空转换会让分支错过订阅建立，页面卡在空态；快照状态保证创建即重组）
+        val queueItems = importQueue?.items
+            ?.let { flow -> flow.collectAsState(initial = emptyList()).value }
+            ?: emptyList()
 
         // 系统返回手势/按键：非根页逐页回退，根页不拦截（系统默认退出）
         BackHandler(enabled = pageStack.size > 1) { goBack() }
@@ -326,12 +333,13 @@ class MainActivity : ComponentActivity() {
                     is Page.Ledger -> LedgerListScreen(
                         entries = entries,
                         thumbDir = File(File(filesDir, "ledger"), "thumbs"),
+                        photoDir = File(File(filesDir, "ledger"), "photos"),
                         emptyHint = "还没有账目\n\n点右下角 ➕ 从相册导入订单截图",
                         onEntryClick = { navigate(Page.Detail(it.id)) },
                         onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     )
                     is Page.ImportQueue -> ImportQueueScreen(
-                        items = importQueue?.items?.collectAsState()?.value.orEmpty(),
+                        items = queueItems,
                         onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onConfirmDraft = ::confirmFromQueue,
                         onConfirmAll = ::confirmAllFromQueue,
@@ -409,7 +417,7 @@ class MainActivity : ComponentActivity() {
             editedAmount = form.amountPaid.toDoubleOrNull() ?: 0.0,
             editedDate = form.datePaid,
             editedCategory = form.category,
-            editedOrderStatus = form.orderStatus,
+            editedOrderStatus = "",   // 订单状态退出 UI（2026-09）：存量值只在编辑路径保留
             photoBytes = lastPhotoBytes,
         )
         lastPhotoBytes = null
@@ -418,12 +426,12 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun saveEdit(entry: Entry, form: EntryForm) {
         repo.edit(entry) {
+            // orderStatus 不在表单里：原样保留存量值（字段已退出 UI）
             copy(
                 merchant = form.merchant,
                 amountPaid = form.amountPaid.toDoubleOrNull() ?: 0.0,
                 datePaid = form.datePaid,
                 category = form.category,
-                orderStatus = form.orderStatus,
             )
         }
         goBack()

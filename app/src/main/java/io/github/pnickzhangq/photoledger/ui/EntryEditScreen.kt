@@ -35,13 +35,12 @@ import coil.request.ImageRequest
 import io.github.pnickzhangq.photoledger.data.Entry
 import java.io.File
 
-/** 可编辑表单状态（编辑既有 Entry 与手工新增共用）。 */
+/** 可编辑表单状态（编辑既有 Entry）。订单状态不再编辑（存量值由保存路径原样保留）。 */
 data class EntryForm(
     var merchant: String,
     var amountPaid: String,
     var datePaid: String,
     var category: String,
-    var orderStatus: String,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -55,9 +54,8 @@ fun EntryEditScreen(
 ) {
     var merchant by remember(entry.id) { mutableStateOf(entry.merchant) }
     var amount by remember(entry.id) { mutableStateOf(entry.amountPaid.toString()) }
-    var date by remember(entry.id) { mutableStateOf(entry.datePaid) }
+    var date by remember(entry.id) { mutableStateOf(entry.datePaid.take(10)) }
     var category by remember(entry.id) { mutableStateOf(entry.category) }
-    var statusText by remember(entry.id) { mutableStateOf(entry.orderStatus) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -85,14 +83,7 @@ fun EntryEditScreen(
             value = amount, onValueChange = { amount = it },
             label = { Text("实付款金额") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = date, onValueChange = { date = it },
-            label = { Text("日期") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = statusText, onValueChange = { statusText = it },
-            label = { Text("订单状态") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
+        DateField(value = date, onValueChange = { date = it })
         OutlinedTextField(
             value = category, onValueChange = { category = it },
             label = { Text("类别") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -110,7 +101,7 @@ fun EntryEditScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    onSave(EntryForm(merchant, amount, date, category, statusText))
+                    onSave(EntryForm(merchant, amount, date, category))
                 },
                 modifier = Modifier.weight(1f),
             ) { Text("保存") }

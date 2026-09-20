@@ -186,12 +186,12 @@ private fun ImportItemCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            "✓ ${d.merchant} ¥${d.amountPaid} @" +
-                                d.datePaid.take(10).ifEmpty { "无日期（入账时填今天）" },
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                        )
+                        // 商家退出模型输出（留空后补）：空商家不再占位
+                        val summary = buildString {
+                            if (d.merchant.isNotBlank()) append(d.merchant + " ")
+                            append("¥${d.amountPaid} @${d.datePaid.take(10).ifEmpty { "无日期（入账时填今天）" }}")
+                        }
+                        Text("✓ $summary", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                         if (i in confirmedSet) {
                             Text(
                                 "已入账",

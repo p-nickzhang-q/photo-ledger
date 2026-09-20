@@ -40,7 +40,6 @@ data class DraftForm(
     var amountPaid: String,
     var datePaid: String,
     var category: String,
-    var orderStatus: String,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -54,9 +53,8 @@ fun DraftConfirmScreen(
 ) {
     var merchant by remember { mutableStateOf(draft.merchant) }
     var amount by remember { mutableStateOf(draft.amountPaid.toString()) }
-    var date by remember { mutableStateOf(draft.datePaid) }
+    var date by remember { mutableStateOf(draft.datePaid.take(10)) }
     var category by remember { mutableStateOf(draft.category) }
-    var statusText by remember { mutableStateOf(draft.orderStatus) }
 
     Column(
         modifier = Modifier
@@ -81,15 +79,7 @@ fun DraftConfirmScreen(
             value = amount, onValueChange = { amount = it },
             label = { Text("实付款金额") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = date, onValueChange = { date = it },
-            label = { Text("日期（${if (draft.dateSource == com.pnickzhangq.photoledger.engine.DateSource.PAYMENT_TIME) "付款时间" else "下单时间"}）") },
-            singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = statusText, onValueChange = { statusText = it },
-            label = { Text("订单状态") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
+        DateField(value = date, onValueChange = { date = it })
 
         // 类别：文本框 + 快选（类别列表来自类别体系，票 08；FlowRow 适配任意数量）
         OutlinedTextField(
@@ -116,7 +106,6 @@ fun DraftConfirmScreen(
                             amountPaid = amount,
                             datePaid = date,
                             category = category,
-                            orderStatus = statusText,
                         ),
                     )
                 },
