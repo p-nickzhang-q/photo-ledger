@@ -26,9 +26,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -63,6 +66,7 @@ import io.github.pnickzhangq.photoledger.ocr.OcrLine
 import io.github.pnickzhangq.photoledger.ocr.OnDevicePipeline
 import io.github.pnickzhangq.photoledger.ui.BackupScreen
 import io.github.pnickzhangq.photoledger.ui.CategoryManageScreen
+import io.github.pnickzhangq.photoledger.ui.LedgerTheme
 import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
 import io.github.pnickzhangq.photoledger.ui.DraftForm
 import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
@@ -194,7 +198,7 @@ class MainActivity : ComponentActivity() {
         handleShareIntent(intent)
 
         setContent {
-            MaterialTheme {
+            LedgerTheme {
                 AppScaffold()
             }
         }
@@ -338,11 +342,22 @@ class MainActivity : ComponentActivity() {
                             IconButton(onClick = { navigate(Page.CategoryManage) }) {
                                 Icon(Icons.Filled.Category, contentDescription = "类别管理")
                             }
-                            IconButton(onClick = { navigate(Page.Backup) }) {
-                                Icon(Icons.Filled.Backup, contentDescription = "备份与导出")
+                            // 低频入口收进溢出菜单：顶栏不再五图标平铺（设计收敛）
+                            var showMoreMenu by remember { mutableStateOf(false) }
+                            IconButton(onClick = { showMoreMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "更多")
                             }
-                            IconButton(onClick = { navigate(Page.ModelManage) }) {
-                                Icon(Icons.Filled.Settings, contentDescription = "模型管理")
+                            DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("备份与导出") },
+                                    leadingIcon = { Icon(Icons.Filled.Backup, contentDescription = null) },
+                                    onClick = { showMoreMenu = false; navigate(Page.Backup) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("模型管理") },
+                                    leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                    onClick = { showMoreMenu = false; navigate(Page.ModelManage) },
+                                )
                             }
                         }
                     },
@@ -370,6 +385,7 @@ class MainActivity : ComponentActivity() {
                         emptyHint = "还没有账目\n\n点右下角 ➕ 从相册导入订单截图",
                         onEntryClick = { navigate(Page.Detail(it.id)) },
                         onImportFromGallery = ::launchGalleryPick,
+                        monthTotals = monthTotals,
                     )
                     is Page.ImportQueue -> ImportQueueScreen(
                         items = queueItems,

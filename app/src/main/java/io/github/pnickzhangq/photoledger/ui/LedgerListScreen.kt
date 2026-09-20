@@ -1,14 +1,16 @@
 // 票 06：流水列表（倒序 + 缩略图，点开详情看原图）。票 09：+按月分组（月内保持倒序）。
-// 汇总页属票 09 的 SummaryScreen，本屏不做汇总。
+// 设计「账本墨绿」：月头带当月合计（绿），月组之间撕票虚线，行间无线靠间距；金额用 AmountText。
 package io.github.pnickzhangq.photoledger.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,12 +22,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import io.github.pnickzhangq.photoledger.data.Entry
+import io.github.pnickzhangq.photoledger.data.MonthTotal
 import java.io.File
 
 @Composable
@@ -36,6 +43,7 @@ fun LedgerListScreen(
     emptyHint: String,
     onEntryClick: (Entry) -> Unit,
     onImportFromGallery: () -> Unit = {},   // 票 07：相册多选入口（空态/工具栏均可触发）
+    monthTotals: List<MonthTotal> = emptyList(), // 设计：月头当月合计（数据来自票 09 查询）
 ) {
     if (entries.isEmpty()) {
         Column(
@@ -50,13 +58,16 @@ fun LedgerListScreen(
         }
         return
     }
-    // 月份分组：entries 已按 date_paid DESC 排序，月份变化处插标题（月内倒序天然保持）
-    val rows = remember(entries) {
+    val totalsByMonth = remember(monthTotals) { monthTotals.associateBy { it.month } }
+    // 月份分组：entries 已按 date_paid DESC 排序，月份变化处插标题（月内倒序天然保持）。
+    // 月组之间插撕票虚线（首组除外）——结构即信息：虚线只出现在月份分组处。
+    val rows = remember(entries, monthTotals) {
         buildList {
             var lastMonth: String? = null
             entries.forEach { entry ->
                 val month = entry.datePaid.take(7)
                 if (month != lastMonth) {
+                    if (lastMonth != null) add(LedgerRow.Perforation)
                     add(LedgerRow.Header(month))
                     lastMonth = month
                 }
@@ -71,20 +82,20 @@ fun LedgerListScreen(
                 when (it) {
                     is LedgerRow.Header -> "h-${it.month}"
                     is LedgerRow.Item -> "e-${it.entry.id}"
+                    is LedgerRow.Perforation -> "p-${rows.indexOf(it)}"
                 }
             },
-            contentType = { if (it is LedgerRow.Header) "header" else "entry" },
+            contentType = {
+                when (it) {
+                    is LedgerRow.Header -> "header"
+                    is LedgerRow.Item -> "entry"
+                    is LedgerRow.Perforation -> "perforation"
+                }
+            },
         ) { row ->
             when (row) {
-                is LedgerRow.Header -> Text(
-                    formatMonth(row.month),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                )
+                is LedgerRow.Perforation -> PerforationDivider()
+                is LedgerRow.Header -> MonthHeader(row.month, totalsByMonth[row.month])
                 is LedgerRow.Item -> EntryRow(row.entry, thumbDir, photoDir, onEntryClick)
             }
         }
@@ -94,6 +105,59 @@ fun LedgerListScreen(
 private sealed class LedgerRow {
     data class Header(val month: String) : LedgerRow()
     data class Item(val entry: Entry) : LedgerRow()
+    data object Perforation : LedgerRow()
+}
+
+/** 月头：左月份、右当月合计（账绿）——翻账本时最想要的数字就在分组标题上。 */
+@Composable
+private fun MonthHeader(month: String, total: MonthTotal?) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text(
+            formatMonth(month),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        if (total != null) {
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "合计 ${total.count} 笔",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                AmountText(total.total, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+/** 撕票虚线：只在月份分组之间出现（见 rows 构建），别处不用。 */
+@Composable
+private fun PerforationDivider() {
+    val lineColor = MaterialTheme.colorScheme.outlineVariant
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .height(1.dp)
+            .drawBehind {
+                val dash = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))
+                drawLine(
+                    color = lineColor,
+                    start = Offset(0f, size.height / 2),
+                    end = Offset(size.width, size.height / 2),
+                    strokeWidth = size.height,
+                    pathEffect = dash,
+                )
+            },
+    )
 }
 
 @Composable
@@ -137,13 +201,11 @@ private fun EntryRow(entry: Entry, thumbDir: File, photoDir: File, onEntryClick:
                 if (entry.merchant.isNotBlank()) "${entry.datePaid.take(10)} · ${entry.category}"
                 else entry.datePaid.take(10),
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
-        Text(
-            "¥${formatAmount(entry.amountPaid)}",
-            style = MaterialTheme.typography.titleMedium,
-        )
+        AmountText(entry.amountPaid, style = MaterialTheme.typography.titleMedium)
     }
 }
 
