@@ -60,15 +60,15 @@ fun LedgerListScreen(
     }
     val totalsByMonth = remember(monthTotals) { monthTotals.associateBy { it.month } }
     // 月份分组：entries 已按 date_paid DESC 排序，月份变化处插标题（月内倒序天然保持）。
-    // 月组之间插撕票虚线（首组除外）——结构即信息：虚线只出现在月份分组处。
-    val rows = remember(entries, monthTotals) {
+    // 撕票虚线画在月头顶部（首组除外）——结构即信息：虚线只出现在月份分组处。
+    // 注意不要给虚线单独发 LazyColumn 行：data object 单例的 indexOf 会让 key 重复（真机崩溃前科）。
+    val rows = remember(entries) {
         buildList {
             var lastMonth: String? = null
             entries.forEach { entry ->
                 val month = entry.datePaid.take(7)
                 if (month != lastMonth) {
-                    if (lastMonth != null) add(LedgerRow.Perforation)
-                    add(LedgerRow.Header(month))
+                    add(LedgerRow.Header(month, withPerforation = lastMonth != null))
                     lastMonth = month
                 }
                 add(LedgerRow.Item(entry))
@@ -82,20 +82,12 @@ fun LedgerListScreen(
                 when (it) {
                     is LedgerRow.Header -> "h-${it.month}"
                     is LedgerRow.Item -> "e-${it.entry.id}"
-                    is LedgerRow.Perforation -> "p-${rows.indexOf(it)}"
                 }
             },
-            contentType = {
-                when (it) {
-                    is LedgerRow.Header -> "header"
-                    is LedgerRow.Item -> "entry"
-                    is LedgerRow.Perforation -> "perforation"
-                }
-            },
+            contentType = { if (it is LedgerRow.Header) "header" else "entry" },
         ) { row ->
             when (row) {
-                is LedgerRow.Perforation -> PerforationDivider()
-                is LedgerRow.Header -> MonthHeader(row.month, totalsByMonth[row.month])
+                is LedgerRow.Header -> MonthHeader(row.month, totalsByMonth[row.month], row.withPerforation)
                 is LedgerRow.Item -> EntryRow(row.entry, thumbDir, photoDir, onEntryClick)
             }
         }
@@ -103,36 +95,38 @@ fun LedgerListScreen(
 }
 
 private sealed class LedgerRow {
-    data class Header(val month: String) : LedgerRow()
+    data class Header(val month: String, val withPerforation: Boolean) : LedgerRow()
     data class Item(val entry: Entry) : LedgerRow()
-    data object Perforation : LedgerRow()
 }
 
 /** 月头：左月份、右当月合计（账绿）——翻账本时最想要的数字就在分组标题上。 */
 @Composable
-private fun MonthHeader(month: String, total: MonthTotal?) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        Text(
-            formatMonth(month),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        if (total != null) {
-            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    "合计 ${total.count} 笔",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                AmountText(total.total, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+private fun MonthHeader(month: String, total: MonthTotal?, withPerforation: Boolean) {
+    Column {
+        if (withPerforation) PerforationDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Text(
+                formatMonth(month),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            if (total != null) {
+                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "合计 ${total.count} 笔",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    AmountText(total.total, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                }
             }
         }
     }
