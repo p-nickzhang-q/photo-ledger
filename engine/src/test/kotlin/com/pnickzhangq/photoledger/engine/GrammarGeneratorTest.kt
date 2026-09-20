@@ -23,12 +23,23 @@ class GrammarGeneratorTest {
     }
 
     @Test
-    fun `字符串值强制 JSON 转义安全字符`() {
+    fun `root 骨架不再含 merchant——契约三字段`() {
         val grammar = GrammarGenerator.fromSchema(schema)
-        // merchant 是自由文本（中文商家名），grammar 中不能直接允许裸引号/裸反斜杠
-        val stringRule = grammar.lineSequence().first { it.startsWith("string ::=") }
-        // 允许常见 CJK 与 ASCII 可打印字符，禁止未转义的 " 与 \
-        assertTrue("[^\"\\\\\\x7F\\x00-\\x1F]" in stringRule, "string 规则应限制字符集：$stringRule")
+        // 2026-09：merchant 退出模型输出（0.6B 抄写中文店名太弱，真机连续出错）
+        assertTrue("merchant" !in grammar, "文法不应再约束 merchant：$grammar")
+        assertTrue("\"\\\"amountPaid\\\"" in grammar)
+    }
+
+    @Test
+    fun `无候选时 date 锁死空串——schema 转 datePaid 仅空枚举`() {
+        // 真机：支付成功页全图无日期，自由文法下 0.6B 幻觉出 2023-05-19；
+        // 空候选必须锁死 date 规则，模型无从编造
+        val locked = GrammarGenerator.withDateAlternatives(GrammarGenerator.fromSchema(schema), emptyList())
+        val dateRule = locked.lineSequence().first { it.startsWith("date ::= ") }
+        assertTrue("|" !in dateRule, "空候选的 date 规则不应有备选：$dateRule")
+        val schemaJson = Json.parseToJsonElement(GrammarGenerator.toJsonSchema(locked)).jsonObject
+        val datePaid = schemaJson["properties"]!!.jsonObject["datePaid"]!!.jsonObject
+        assertEquals(listOf(""), datePaid["enum"]!!.jsonArray.map { it.jsonPrimitive.content })
     }
 
     @Test
@@ -97,11 +108,11 @@ class GrammarGeneratorTest {
     }
 
     @Test
-    fun `空候选清单被拒绝`() {
+    fun `空候选清单锁死空串——不再被拒绝`() {
+        // 2026-09 契约：空候选 = 无日期页面，date 锁死空串（旧契约要求抛异常，已反转）
         val grammar = GrammarGenerator.fromSchema(schema)
-        assertFailsWith<IllegalArgumentException> {
-            GrammarGenerator.withDateAlternatives(grammar, emptyList())
-        }
+        val locked = GrammarGenerator.withDateAlternatives(grammar, emptyList())
+        assertTrue("|" !in locked.lineSequence().first { it.startsWith("date ::= ") })
     }
 
     // ---------- GBNF → JSON Schema（LiteRT-LM 约束用，票 13/14/07） ----------
@@ -132,7 +143,7 @@ class GrammarGeneratorTest {
     }
 
     @Test
-    fun `schema 必填字段为契约四字段`() {
+    fun `schema 必填字段为契约三字段`() {
         val grammar = GrammarGenerator.withDateAlternatives(
             GrammarGenerator.fromSchema(schema),
             listOf("2026-09-10"),
@@ -140,7 +151,7 @@ class GrammarGeneratorTest {
         val schemaJson = Json.parseToJsonElement(GrammarGenerator.toJsonSchema(grammar)).jsonObject
         val props = schemaJson["properties"]!!.jsonObject
         assertEquals(
-            setOf("merchant", "amountPaid", "datePaid", "category"),
+            setOf("amountPaid", "datePaid", "category"),
             props.keys,
         )
         assertEquals(
@@ -148,7 +159,7 @@ class GrammarGeneratorTest {
             props["category"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content },
         )
         assertEquals(
-            setOf("merchant", "amountPaid", "datePaid", "category"),
+            setOf("amountPaid", "datePaid", "category"),
             schemaJson["required"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet(),
         )
     }

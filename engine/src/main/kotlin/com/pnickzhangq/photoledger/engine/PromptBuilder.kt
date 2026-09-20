@@ -14,7 +14,6 @@ object PromptBuilder {
         appendLine("你是记账助手。从这张订单截图中提取以下字段，以 JSON 输出。")
         appendLine()
         appendLine("字段说明：")
-        appendLine("- merchant: 商家或平台名称（如「美团」「淘宝」「京东」或具体店铺名）")
         appendLine("- amountPaid: 实付款金额，即用户为这笔订单实际支付的钱。取「实付款」「实付」「付款金额」，不要取商品总价、运费或优惠前价格")
         appendLine("- datePaid: 支付发生的日期，格式 YYYY-MM-DD。优先取付款时间；截图上没有付款时间时取下单时间")
         appendLine("- category: 从以下类别中选最贴切的一个：${categories.joinToString("、")}")
@@ -46,7 +45,6 @@ object PromptBuilder {
         }
         appendLine()
         appendLine("请提取为 JSON。字段说明：")
-        appendLine("- merchant: 商家或店铺名称。优先取店铺名（如「如意馄饨·干拌面光福店」），不要填平台或频道名（如「闪购」「淘宝」）")
         appendLine("- amountPaid: 实付款金额，取「实付款/实付」后紧跟的数字，不要商品单价、运费或优惠前价格")
         appendLine("- datePaid: 支付发生的日期，格式 YYYY-MM-DD。优先取付款时间；没有付款时间时取下单时间。必须逐字取自上方日期清单（存在清单时）")
         appendLine("- category: 必须从以下类别中选一个：${categories.joinToString("、")}")

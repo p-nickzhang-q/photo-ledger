@@ -42,9 +42,10 @@ class PromptBuilderTest {
     }
 
     @Test
-    fun `OCR 版 prompt 反平台名取店名`() {
+    fun `OCR 版 prompt 不再要求商家——契约三字段`() {
         val p = PromptBuilder.buildFromOcr(listOf("其他"), "闪购\n华莱士", emptyList(), emptyList())
-        assertTrue("店铺名" in p && "闪购" in p, "prompt 须明确优先店名并把平台名列为反例")
+        // 2026-09：merchant 退出模型输出（0.6B 抄写中文店名太弱，真机连续出错）
+        assertTrue("merchant" !in p && "店铺名" !in p, "prompt 不应再要求商家字段：$p")
     }
 
     @Test

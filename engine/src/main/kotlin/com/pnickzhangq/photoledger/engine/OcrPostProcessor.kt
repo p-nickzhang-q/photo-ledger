@@ -23,6 +23,13 @@ data class OcrLine(
  */
 object OcrPostProcessor {
 
+    /**
+     * OCR 行进 prompt 的最低置信度。正常文本行普遍 >0.9；低于此值的碎片
+     * （状态栏数字、误识别块）会带偏 0.6B 的金额选择——真机案例：0.57 的状态栏
+     * 「794」被当成金额，370 元转账页提取成 794。过滤放在 extractFromOcr 入口。
+     */
+    const val MIN_LINE_SCORE = 0.7f
+
     // ---------- 日期规范化 ----------
 
     private val FULL_DT = Regex("""(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?""")
@@ -30,6 +37,17 @@ object OcrPostProcessor {
     private val SHORT_DOT = Regex("""^(\d{1,2})\.(\d{1,2})(?!\.)""")   // 「09.10」角标形态（可粘连后续文字，如「09.09丨共4件」）
     private val SHORT_DASH = Regex("""^(\d{1,2})-(\d{1,2})(?![-\d])""")   // 「09-10」形态（不吞日期段后续）
     private val MD_HM = Regex("""^(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}):(\d{2})$""") // 「09-10 11:19」缺年
+    private val TIME_ONLY = Regex("""^\d{1,2}:\d{2}(:\d{2})?$""")   // 「10:41」「16:46:28」状态栏/角标时间
+
+    /**
+     * 年份缺位修复（真机：行首数字被屏幕边缘切掉，「2026-09-17 20:08:46」读成「026-09-17 …」）。
+     * 2-3 位年 + 合法月日，且与 contextYear 后缀一致才修（「026」== last3(2026)）；
+     * 上下文年缺失或后缀不符一律返回 null——「宁可缺失不乱猜」口径不变。
+     */
+    private val SHORT_YEAR_DT = Regex("""(\d{2,3})[-/.](\d{1,2})[-/.月](\d{1,2})日?(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?""")
+
+    /** 交易日期锚定标签：这些标签行（本行或紧邻上一行）后面的日期才是交易日期。 */
+    private val DATE_ANCHOR_KEYWORDS = listOf("下单时间", "付款时间", "支付时间", "交易时间", "创建时间", "成交时间", "消费时间")
 
     /**
      * 日期规范化为「YYYY-MM-DD HH:MM:SS」。识别不了返回 null（宁可缺失不给模型喂畸形值，
@@ -49,6 +67,18 @@ object OcrPostProcessor {
             val (y, mo, d) = m.destructured
             if (!isValidDate(y.toInt(), mo.toInt(), d.toInt())) return@let
             return "%04d-%02d-%02d 00:00:00".format(y.toInt(), mo.toInt(), d.toInt())
+        }
+        SHORT_YEAR_DT.find(s)?.let { m ->
+            val yPart = m.groupValues[1]
+            val year = contextYear
+            if (year == null || !year.toString().endsWith(yPart)) return@let
+            val mo = m.groupValues[2].toInt()
+            val d = m.groupValues[3].toInt()
+            if (!isValidDate(year, mo, d)) return@let
+            val h = m.groupValues[4].ifEmpty { "0" }.toInt()
+            val mi = m.groupValues[5].ifEmpty { "0" }.toInt()
+            val sec = m.groupValues[6].ifEmpty { "0" }.toInt()
+            return "%04d-%02d-%02d %02d:%02d:%02d".format(year, mo, d, h, mi, sec)
         }
         MD_HM.find(s)?.let { m ->
             val (mo, d, h, mi) = m.destructured
@@ -176,23 +206,64 @@ object OcrPostProcessor {
         val blocks = splitOrderBlocks(lines)
         val year = contextYear ?: guessContextYear(lines)
         val dates = linkedSetOf<String>()
+        val preferred = linkedSetOf<String>()
         val amounts = linkedSetOf<Double>()
+        var prevText = ""
         for (line in lines) {
-            normalizeDate(line.text, year)?.let { dates.add(it) }
-            normalizeAmount(line.text)?.let { amounts.add(it) }
+            val date = normalizeDate(line.text, year)
+            if (date != null) {
+                dates.add(date)
+                // 锚定收口：只认「下单/付款/支付/创建时间」标签行（本行或紧邻上一行）认领的日期——
+                // 促销行（活动时间：2026年4月1日-12月31日）的日期不进候选。真机案例：
+                // 真日期被 OCR 切掉年份，修复后与促销日期并存，模型仍挑了促销日期；
+                // 候选收窄到锚定日期后，语法约束下模型无从选错。
+                if (DATE_ANCHOR_KEYWORDS.any { it in line.text || it in prevText }) preferred.add(date)
+            }
+            // 金额：货币符号行是强信号，永远提取（即使行内粘连日期）；
+            // 无符号行才剪枝——日期行/时间行/账号行的数字不是金额
+            // （「2026-09-15 16:46:28」的 2026 会被 4 位整数规则修成假金额 20.26 污染候选池）
+            val hasCurrency = line.text.contains('¥') || line.text.contains('￥')
+            when {
+                hasCurrency -> normalizeAmount(line.text)?.let { amounts.add(it) }
+                date == null -> {
+                    val text = line.text.trim()
+                    val isJunkAmount = text.contains('@') || TIME_ONLY.containsMatchIn(text)
+                    if (!isJunkAmount) normalizeAmount(line.text)?.let { amounts.add(it) }
+                }
+            }
+            prevText = line.text
         }
         val text = blocks.joinToString("\n") { block ->
-            block.joinToString("\n") { it.text }
+            block.joinToString("\n") { cleanLineText(it.text) }
         }
-        return StructuredMaterial(blockText = text, normalizedDates = dates.toList(), amounts = amounts.toList())
+        val effectiveDates = if (preferred.isNotEmpty()) preferred.toList() else dates.toList()
+        return StructuredMaterial(blockText = text, normalizedDates = effectiveDates, amounts = amounts.toList())
     }
 
-    /** 从 OCR 行猜测截图年份：找任何完整年份作上下文（角标碎片用它补全）。 */
+    /**
+     * 从 OCR 行猜测截图年份：年份必须紧跟日期分隔符（「2026-09-…」「2026年4月…」）。
+     * 裸数字串不认——订单号「0260917201616034176」含子串「2016」，会把上下文年骗成 2016，
+     * 连带年份缺位修复的后缀检查失效（真机收银支付页案例）。
+     */
     fun guessContextYear(lines: List<OcrLine>): Int? {
-        val y = Regex("""(20\d{2})""")
+        val y = Regex("""(20\d{2})[-/.年]""")
         for (line in lines) {
             y.find(line.text)?.let { return it.groupValues[1].toInt() }
         }
         return null
+    }
+
+    // ---------- 行文本清理（给模型看的 blockText） ----------
+
+    /**
+     * 界面痕迹清理：
+     * - 行尾「>」「＞」（详情页箭头 UI 符号）剥掉——0.6B 会原样抄进 merchant
+     * - 行中被「····」截断且截断后无数字时取前段（列表页店铺名「沪上阿姨····苏」→「沪上阿姨」）；
+     *   截断后有数字（可能是金额行「商品····￥10」）不动
+     * 仅用于 blockText 呈现；日期/金额归一仍用原文，互不影响。
+     */
+    fun cleanLineText(raw: String): String {
+        val s = raw.trim().trimEnd('>', '＞')
+        return s.replace(Regex("[·.]{4,}[^0-9]*$"), "").trim()
     }
 }

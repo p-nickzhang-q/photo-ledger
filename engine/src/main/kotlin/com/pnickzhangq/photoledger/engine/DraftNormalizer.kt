@@ -30,7 +30,8 @@ object DraftNormalizer {
             throw ExtractionParseException("缺少必需字段：$missing")
         }
 
-        val merchant = root["merchant"]!!.jsonPrimitive.content
+        // merchant 2026-09 起退出模型输出：缺失/留空均合法（详情页后补）
+        val merchant = root["merchant"]?.jsonPrimitive?.content ?: ""
         val amount = root["amountPaid"]!!.jsonPrimitive.doubleOrNull
             ?: throw ExtractionParseException("amountPaid 不是数字：${root["amountPaid"]}")
         if (amount < 0) throw ExtractionParseException("amountPaid 为负：$amount")
@@ -48,5 +49,5 @@ object DraftNormalizer {
         )
     }
 
-    private val REQUIRED_FIELDS = listOf("merchant", "amountPaid", "datePaid", "category")
+    private val REQUIRED_FIELDS = listOf("amountPaid", "datePaid", "category")
 }

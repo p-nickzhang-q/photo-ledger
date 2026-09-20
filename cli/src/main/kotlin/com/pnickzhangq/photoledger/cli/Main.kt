@@ -27,6 +27,44 @@ fun main(args: Array<String>) = runBlocking {
         dumpGrammar(args.getOrElse(1) { "build/extract-grammar.gbnf" })
         return@runBlocking
     }
+    if (args.isNotEmpty() && args[0] == "--replay") {
+        // 诊断工具（金额识别差分回放）：--replay <lines.txt> --model <litertlm> [--min-score 0.7] [--show-prompt]
+        // lines.txt 每行 `score\ttext`（取自真机 E2E_OCR_LINE 日志）。跳过 OCR，直接把行喂给真模型。
+        var linesFile = ""
+        var model = ""
+        var minScore = 0f
+        var showPrompt = false
+        var i = 1
+        while (i < args.size) {
+            when (args[i]) {
+                "--model" -> model = args[++i]
+                "--min-score" -> minScore = args[++i].toFloat()
+                "--show-prompt" -> showPrompt = true
+                else -> if (linesFile.isEmpty()) linesFile = args[i]
+            }
+            i++
+        }
+        require(linesFile.isNotEmpty()) { "--replay 需要 <lines.txt> 路径" }
+        val lines = File(linesFile).readLines()
+            .filter { it.isNotBlank() }
+            .mapIndexed { idx, raw ->
+                val parts = raw.split("\t", limit = 2)
+                require(parts.size == 2) { "行格式应为 `score\\ttext`：$raw" }
+                val top = idx * 40f
+                com.pnickzhangq.photoledger.engine.OcrLine(
+                    text = parts[1],
+                    score = parts[0].toFloat(),
+                    box = listOf(0f, top, 200f, top, 200f, top + 30f, 0f, top + 30f),
+                )
+            }
+        println("载入 ${lines.size} 行，min-score=$minScore → 有效 ${lines.count { it.score >= minScore }} 行")
+        LitertJvmTransport(modelPath = File(model).absolutePath).use { transport ->
+            val engine = ExtractionEngine(transport, DEFAULT_CATEGORIES)
+            val drafts = engine.extractFromOcr(lines.filter { it.score >= minScore }, fallbackYear = 2026)
+            drafts.forEach { println(draftToJson(it)) }
+        }
+        return@runBlocking
+    }
     if (args.isNotEmpty() && args[0] == "--gate") {
         // 用法：--gate <标注.csv> [--images 目录] [--model 路径] [--out 报告.md] [--port N]
         var csv = ""

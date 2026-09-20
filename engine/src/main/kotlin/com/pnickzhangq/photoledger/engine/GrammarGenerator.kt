@@ -9,17 +9,19 @@ package com.pnickzhangq.photoledger.engine
  */
 object GrammarGenerator {
 
+    /**
+     * 空串锁定规则的 date 规则体：「\"\"」= 一个 GBNF 字面量（内容两个引号字符 = JSON 空串）。
+     * withDateAlternatives 与 toJsonSchema 共用此常量，转义层数不再手写两份。
+     */
+    private val EMPTY_ONLY_DATE_RULE = "date ::= \"\\\"\\\"\""
+
     fun fromSchema(schema: ExtractionSchema): String = buildString {
-        // 对象骨架：字段按固定顺序输出，全部必填（票 07 提速：只约束用户需要的 4 字段）
-        append("root ::= \"{\" ws \"\\\"merchant\\\"\" ws \":\" ws merchant \",\" ws")
-        append(" \"\\\"amountPaid\\\"\" ws \":\" ws amount \",\" ws")
+        // 对象骨架：字段按固定顺序输出，全部必填（契约 3 字段：金额/日期/类别——
+        // 商家 0.6B 抄写太弱，真机连续出错，2026-09 起退出模型输出，留空后补）
+        append("root ::= \"{\" ws \"\\\"amountPaid\\\"\" ws \":\" ws amount \",\" ws")
         append(" \"\\\"datePaid\\\"\" ws \":\" ws date \",\" ws")
         append(" \"\\\"category\\\"\" ws \":\" ws category \"}\"")
         append("\n")
-
-        // 自由文本（商家名）：CJK + ASCII 可打印，禁止裸引号与裸反斜杠
-        append("string ::= \"\\\"\" ( [^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\\\"\" | \"\\\\\\\\\" | \"\\\\n\" | \"\\\\t\" )* \"\\\"\"\n")
-        append("merchant ::= string\n")
 
         // 金额：非负数字，最多两位小数
         append("amount ::= [0-9]+ (\".\" [0-9] [0-9]?)?\n")
@@ -45,11 +47,16 @@ object GrammarGenerator {
      * 从清单里选则不可能出畸形值。
      */
     fun withDateAlternatives(grammar: String, candidates: List<String>): String {
-        require(candidates.isNotEmpty()) { "候选清单为空时应使用原 grammar" }
         val dateRule = grammar.lineSequence().firstOrNull { it.startsWith("date ::= ") }
             ?: return grammar
-        val alternatives = candidates.joinToString(" | ") { "\"\\\"$it\\\"\"" }
-        val newRule = "date ::= $alternatives | \"\\\"\\\"\""
+        val newRule = if (candidates.isEmpty()) {
+            // 无候选：锁死空串——无日期页面模型无法编造日期
+            // （真机：支付成功页全图无日期，prompt 让填空串但自由文法下 0.6B 幻觉出 2023-05-19）
+            EMPTY_ONLY_DATE_RULE
+        } else {
+            val alternatives = candidates.joinToString(" | ") { "\"\\\"$it\\\"\"" }
+            "date ::= $alternatives | \"\\\"\\\"\""
+        }
         return grammar.lines().joinToString("\n") { if (it == dateRule) newRule else it }
     }
 
@@ -61,18 +68,22 @@ object GrammarGenerator {
      * 2. date 规则是原始范围规则（行内无 `|`）时，datePaid 必须为自由 string——
      *    范围规则文本内含裸引号字符，误当候选解析会产出非法 schema
      *    （票 07 真机回归：无日期截图触发 Gson "Unterminated array"，该图提取固定失败）；
-     * 3. category 枚举从规则行提取；契约 4 字段（merchant/amountPaid/datePaid/category）。
+     * 3. category 枚举从规则行提取；契约 3 字段（amountPaid/datePaid/category——merchant 退出模型输出）。
      */
     fun toJsonSchema(grammar: String): String {
         val dateLine = grammar.lineSequence().firstOrNull { it.startsWith("date ::=") }
-        val dateCandidates = dateLine
-            ?.takeIf { it.contains('|') }
-            ?.removePrefix("date ::=")
-            ?.split("|")
-            ?.map(::stripGbnfQuotes)
-            ?.filter { it.isNotEmpty() }
-            ?.toList()
-            ?: emptyList()
+        val dateRuleBody = dateLine?.removePrefix("date ::=")?.trim()
+        val dateCandidates = when {
+            dateRuleBody == null -> emptyList()
+            // 空串锁定规则（无日期页面）：datePaid 只能是 ""
+            dateRuleBody == EMPTY_ONLY_DATE_RULE.removePrefix("date ::=").trim() -> listOf("")
+            dateRuleBody.contains('|') -> dateRuleBody.split("|")
+                .map(::stripGbnfQuotes)
+                .filter { it.isNotEmpty() }
+                .toList()
+            // 原始范围规则（含裸引号字符，误当候选解析会产出非法 schema——票 07 真机回归）→ datePaid 自由 string
+            else -> emptyList()
+        }
 
         fun enumFrom(ruleName: String): List<String> {
             val line = grammar.lineSequence().firstOrNull { it.startsWith("$ruleName ::=") } ?: return emptyList()
@@ -90,18 +101,17 @@ object GrammarGenerator {
             }
 
         // datePaid：有候选时含空串选项（对齐 GBNF 的 "" 兜底）；无候选时自由 string
-        val datePaidValues = if (dateCandidates.isEmpty()) emptyList() else listOf("") + dateCandidates
+        val datePaidValues = if (dateCandidates.isEmpty()) emptyList() else (listOf("") + dateCandidates).distinct()
 
         return buildString {
             append("{")
             append("\"type\":\"object\",")
             append("\"properties\":{")
-            append("\"merchant\":{\"type\":\"string\"},")
             append("\"amountPaid\":{\"type\":\"number\"},")
             append(enumClause("datePaid", datePaidValues)).append(",")
             append(enumClause("category", categories))
             append("},")
-            append("\"required\":[\"merchant\",\"amountPaid\",\"datePaid\",\"category\"],")
+            append("\"required\":[\"amountPaid\",\"datePaid\",\"category\"],")
             append("\"additionalProperties\":false")
             append("}")
         }

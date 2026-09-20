@@ -38,6 +38,24 @@ class OcrPostProcessorTest {
     }
 
     @Test
+    fun `年份缺位修复——OCR 丢行首数字时结合上下文年补全`() {
+        // 真机案例（收银支付页）：「2026-09-17 20:08:46」被读成「026-09-17 20:08:46」，
+        // 真日期解析失败后候选池只剩促销行日期，模型被迫输出错日期
+        assertEquals(null, OcrPostProcessor.normalizeDate("026-09-17 20:08:46"))
+        assertEquals(
+            "2026-09-17 20:08:46",
+            OcrPostProcessor.normalizeDate("026-09-17 20:08:46", contextYear = 2026),
+        )
+        assertEquals(
+            "2026-09-17 00:00:00",
+            OcrPostProcessor.normalizeDate("26-09-17", contextYear = 2026),
+        )
+        // 后缀不符不乱修（026 ≠ last3(2025)），宁可缺失
+        assertEquals(null, OcrPostProcessor.normalizeDate("026-09-17", contextYear = 2025))
+        assertEquals(null, OcrPostProcessor.normalizeDate("026-09-17"))
+    }
+
+    @Test
     fun `角标粘连后续文字时仍能提取 MM点dd`() {
         // 真实形态（淘宝/闪购列表页）：「09.09丨共4件（含包装/配送费）」「09.07|含包装/配送费实付款￥16.5」
         assertEquals(
@@ -136,6 +154,83 @@ class OcrPostProcessorTest {
         assertEquals(12.34, OcrPostProcessor.normalizeAmount("￥l2.34"))
         // 形近修复只作用于货币符号后的段：无符号行里的 U 不被当 0
         assertEquals(null, OcrPostProcessor.normalizeAmount("共U件"))
+    }
+
+    // ---------- 金额候选剪枝（真机回归：转账详情页 370 被提取成 794 的事故） ----------
+
+    @Test
+    fun `日期时间账号行的数字不进金额候选`() {
+        val lines = listOf(
+            line("2026-09-15 16:46:28", 0),
+            line("10:41", 1),
+            line("猪猪(郑怡) 544***@qq.com", 2),
+            line("-370.00", 3),
+            line("实付款¥14.5 2026-09-01", 4), // 带货币符号的行即使粘连日期也照常提金额
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        // 日期照常归一
+        assertTrue("2026-09-15 16:46:28" in m.normalizedDates)
+        assertTrue("2026-09-01 00:00:00" in m.normalizedDates)
+        // 真金额保留
+        assertTrue(370.0 in m.amounts)
+        assertTrue(14.5 in m.amounts)
+        // 假金额不出现：2026 被 4 位整数规则修出的 20.26、时间 16/10、邮箱账号 544
+        assertTrue(20.26 !in m.amounts)
+        assertTrue(16.0 !in m.amounts)
+        assertTrue(10.0 !in m.amounts)
+        assertTrue(544.0 !in m.amounts)
+    }
+
+    // ---------- 行文本清理（真机回归：一图两单商家行被抄进 UI 符号/截断碎片） ----------
+
+    @Test
+    fun `行文本清理——行尾箭头剥掉中段截断取前段`() {
+        assertEquals("徐乔乔辣子鸡手擀面光福店", OcrPostProcessor.cleanLineText("徐乔乔辣子鸡手擀面光福店>"))
+        assertEquals("沪上阿姨", OcrPostProcessor.cleanLineText("沪上阿姨····苏"))
+        // 截断后带数字——可能是金额行，不动
+        assertEquals("商品····￥10", OcrPostProcessor.cleanLineText("商品····￥10"))
+        // 普通行不受影响（日期小数点不误伤）
+        assertEquals("2026-09-15 16:46:28", OcrPostProcessor.cleanLineText("2026-09-15 16:46:28"))
+        assertEquals("￥15.1", OcrPostProcessor.cleanLineText("￥15.1"))
+    }
+
+    @Test
+    fun `锚定收口——促销日期出局，标签行认领的交易日期进候选`() {
+        // 真机案例（收银支付页）：真日期被 OCR 切掉年份（026-09-17），修复后与促销行
+        // 「活动时间：2026年4月1日」并存，模型挑了促销日期。候选收窄到锚定日期。
+        val lines = listOf(
+            line("支付成功", 0),
+            line("￥39.5", 1),
+            line("下单时间：", 2),
+            line("026-09-17 20:08:46", 3),
+            line("活动时间：2026年4月1日-12月31日（每日00:00:00-23:59:59)", 4),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertEquals(listOf("2026-09-17 20:08:46"), m.normalizedDates)
+        assertEquals(39.5, m.amounts.single(), 0.001)
+    }
+
+    @Test
+    fun `无锚定标签时回退全部日期候选`() {
+        val lines = listOf(
+            line("2026-09-01", 0),
+            line("2026-09-02", 1),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertEquals(listOf("2026-09-01 00:00:00", "2026-09-02 00:00:00"), m.normalizedDates)
+    }
+
+    @Test
+    fun `消费时间也是锚定标签`() {
+        // 真机（乡村基券页）：「消费时间：2026-09-17」——此前不在关键词表，靠候选唯一侥幸正确
+        val lines = listOf(
+            line("乡村基·川菜小炒", 0),
+            line("消费时间：2026-09-17", 1),
+            line("￥20.88", 2),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertEquals(listOf("2026-09-17 00:00:00"), m.normalizedDates)
+        assertEquals(20.88, m.amounts.single(), 0.001)
     }
 
     // ---------- 行聚类：一图多单 ----------

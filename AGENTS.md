@@ -31,7 +31,7 @@ This file provides guidance to the AI agent when working with code in this repos
 
 `PromptBuilder`（prompt 字段说明）↔ `GrammarGenerator.fromSchema`（GBNF，llama.cpp 用）/ `toJsonSchema`（JSON Schema，LiteRT LLGuidance 用）↔ `DraftNormalizer`（解析与默认值）。
 
-当前 Draft 契约只有 4 个模型输出字段：merchant / amountPaid / datePaid / category（用户确认的最小集）。currency=CNY、dateSource=PAYMENT_TIME、orderStatus="" 由引擎默认值承接；datePaid 空串合法（App 入账时自动填导入当天）。
+当前 Draft 契约只有 3 个模型输出字段：amountPaid / datePaid / category。currency=CNY、dateSource=PAYMENT_TIME、orderStatus 由引擎默认值承接；datePaid 空串合法（App 入账时自动填导入当天）。**merchant 已退出模型输出**（2026-09：0.6B 抄写中文店名太弱——prompt 示例泄漏/列表截断碎片/抄错行，真机连续出错），Draft.merchant 留空由用户详情页后补；列表行主标题回退「商家（手填）→ 类别」。
 
 ## 已知死路（勿重复踩）
 
