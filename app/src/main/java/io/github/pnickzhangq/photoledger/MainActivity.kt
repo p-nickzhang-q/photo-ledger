@@ -50,6 +50,7 @@ import io.github.pnickzhangq.photoledger.data.ImportQueue
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
 import io.github.pnickzhangq.photoledger.data.LedgerRepository
 import io.github.pnickzhangq.photoledger.data.PhotoStore
+import io.github.pnickzhangq.photoledger.model.ModelManager
 import io.github.pnickzhangq.photoledger.ocr.ExtractResult
 import io.github.pnickzhangq.photoledger.ocr.JniLlmTransport
 import io.github.pnickzhangq.photoledger.ocr.LitertLlmTransport
@@ -64,6 +65,7 @@ import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
 import io.github.pnickzhangq.photoledger.ui.EntryForm
 import io.github.pnickzhangq.photoledger.ui.ImportQueueScreen
 import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
+import io.github.pnickzhangq.photoledger.ui.ModelManageScreen
 import io.github.pnickzhangq.photoledger.ui.SummaryScreen
 import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.Draft
@@ -78,6 +80,7 @@ private sealed class Page {
     data class Confirm(val draft: Draft, val photoPath: String?) : Page()
     data class Detail(val entryId: Long) : Page()
     data object SmokeTools : Page()
+    data object ModelManage : Page()    // 票 10：模型管理（下载/导入/RAM 预检；首启引导页）
     data object ImportQueue : Page()   // 票 07
     data object CategoryManage : Page() // 票 08
     data object Summary : Page()        // 票 09
@@ -101,7 +104,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var repo: LedgerRepository
 
     // ---- 页栈导航（BackHandler 拦截系统返回逐页回退；根页放行 = 系统默认退出）----
-    private val pageStack = androidx.compose.runtime.mutableStateListOf<Page>(Page.Ledger)
+    // 首启无模型时根页是模型引导页（onCreate 决定，见 modelPrefs）
+    private val pageStack = androidx.compose.runtime.mutableStateListOf<Page>()
     private val currentPage: Page get() = pageStack.last()
     private fun navigate(p: Page) {
         if (currentPage != p) pageStack.add(p) // 同页不重复压栈（队列页再分享/再导入场景）
@@ -141,7 +145,17 @@ class MainActivity : ComponentActivity() {
     private var clsPath: String? = null
     private var ggufPath: String? = null
     private var litertBackendOverride: String? = null  // 票 14：smoke intent 传 cpu/gpu 强制后端（A/B 对照）
-    private var litertlmPath: String? = null
+
+    // 票 10：快照状态——下载/导入完成后 rescan 让模型页与各依赖处即时感知
+    private var litertlmPath: String? by mutableStateOf(null)
+
+    // ---- 模型管理（票 10）----
+    private val modelPrefs by lazy { getSharedPreferences("model", MODE_PRIVATE) }
+    private var downloadState by mutableStateOf<ModelManager.DownloadState>(ModelManager.DownloadState.Idle)
+    private var selectedSource by mutableStateOf(0)
+    private var importMsg by mutableStateOf<String?>(null)
+    private var downloadJob: kotlinx.coroutines.Job? = null
+    private var totalRamBytes: Long = 0L
 
     // ---- 引擎与句柄 ----
     private var ocrEngine: OcrEngine? = null
@@ -157,6 +171,12 @@ class MainActivity : ComponentActivity() {
             PhotoStore(File(filesDir, "ledger")),
         )
         scanModelDir()
+        totalRamBytes = ModelManager.totalRamBytes(this)
+
+        // 票 10：首启无模型 → 模型页作为根页（引导下载/导入）；用户跳过或模型就绪后不再强推
+        val onboarding = litertlmPath == null && !modelPrefs.getBoolean("onboard_done", false)
+        pageStack.clear()   // 防御：任何路径导致的重复 onCreate 不得叠栈
+        pageStack.add(if (onboarding) Page.ModelManage else Page.Ledger)
 
         handleSmokeIntent(intent)   // 票 14：抽出复用（onNewIntent 同一入口，冷启动 race 时可重发）
 
@@ -280,6 +300,7 @@ class MainActivity : ComponentActivity() {
             is Page.Detail -> "账目详情"
             is Page.CategoryManage -> "类别管理"
             is Page.Summary -> "汇总"
+            is Page.ModelManage -> "模型管理"
             is Page.SmokeTools -> "开发工具"
         }
 
@@ -306,8 +327,8 @@ class MainActivity : ComponentActivity() {
                             IconButton(onClick = { navigate(Page.CategoryManage) }) {
                                 Icon(Icons.Filled.Category, contentDescription = "类别管理")
                             }
-                            IconButton(onClick = { navigate(Page.SmokeTools) }) {
-                                Icon(Icons.Filled.Settings, contentDescription = "工具")
+                            IconButton(onClick = { navigate(Page.ModelManage) }) {
+                                Icon(Icons.Filled.Settings, contentDescription = "模型管理")
                             }
                         }
                     },
@@ -316,9 +337,7 @@ class MainActivity : ComponentActivity() {
             floatingActionButton = {
                 when (current) {
                     // 主操作：相册选取照片进导入队列（手工记账已删，导入即全部入口）
-                    is Page.Ledger -> FloatingActionButton(onClick = {
-                        pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }) {
+                    is Page.Ledger -> FloatingActionButton(onClick = ::launchGalleryPick) {
                         Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "导入截图")
                     }
                     is Page.CategoryManage -> FloatingActionButton(onClick = { showAddCategoryDialog = true }) {
@@ -336,11 +355,11 @@ class MainActivity : ComponentActivity() {
                         photoDir = File(File(filesDir, "ledger"), "photos"),
                         emptyHint = "还没有账目\n\n点右下角 ➕ 从相册导入订单截图",
                         onEntryClick = { navigate(Page.Detail(it.id)) },
-                        onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onImportFromGallery = ::launchGalleryPick,
                     )
                     is Page.ImportQueue -> ImportQueueScreen(
                         items = queueItems,
-                        onImportFromGallery = { pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onImportFromGallery = ::launchGalleryPick,
                         onConfirmDraft = ::confirmFromQueue,
                         onConfirmAll = ::confirmAllFromQueue,
                     )
@@ -373,6 +392,29 @@ class MainActivity : ComponentActivity() {
                         monthTotals = monthTotals,
                         categoryTotals = currentCategoryTotals,
                         currentMonth = currentMonth,
+                    )
+                    is Page.ModelManage -> ModelManageScreen(
+                        modelFile = litertlmPath?.let(::File)?.takeIf(File::exists),
+                        ocrDetReady = detPath != null,
+                        ocrRecReady = recPath != null,
+                        ocrClsReady = clsPath != null,
+                        totalRamBytes = totalRamBytes,
+                        downloadState = downloadState,
+                        selectedSource = selectedSource,
+                        onSourceChange = { selectedSource = it },
+                        onStartDownload = ::startModelDownload,
+                        onCancelDownload = ::cancelModelDownload,
+                        onImportModel = { pickModelFile.launch(arrayOf("*/*")) },
+                        onImportOcr = { pickOcrFiles.launch(arrayOf("*/*")) },
+                        ocrDownloadState = ocrDownloadState,
+                        onOcrDownloadStart = ::startOcrDownload,
+                        onOcrDownloadCancel = ::cancelOcrDownload,
+                        importMsg = importMsg,
+                        onExitOnboarding = if (pageStack.size == 1) {{
+                            modelPrefs.edit().putBoolean("onboard_done", true).apply()
+                            backToRoot()
+                        }} else null,
+                        onOpenDevTools = { navigate(Page.SmokeTools) },
                     )
                     is Page.Detail -> {
                         val entry = entries.firstOrNull { it.id == p.entryId }
@@ -445,7 +487,7 @@ class MainActivity : ComponentActivity() {
     private fun obtainQueueTransport(): LitertLlmTransport {
         queueTransport?.let { return it }
         val modelPath = litertlmPath?.let(::File)?.takeIf(File::exists)?.absolutePath
-            ?: error("缺 .litertlm 模型")
+            ?: error("缺识别模型：请到「模型管理」页下载或导入")
         val t = try {
             LitertLlmTransport(
                 modelPath = modelPath,
@@ -822,11 +864,163 @@ class MainActivity : ComponentActivity() {
 
     // ---- SAF 选择器 ----
 
+    /** 票 10：相册导入前守卫——无模型直接带去模型页，不进队列白等失败。 */
+    private fun launchGalleryPick() {
+        if (litertlmPath?.let(::File)?.takeIf(File::exists) == null) {
+            importMsg = "还没有识别模型——先下载或导入，再导入截图"
+            navigate(Page.ModelManage)
+            return
+        }
+        pickMultipleImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    }
+
     /** 票 07：相册多选 → 导入队列。 */
     private val pickMultipleImages =
         registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20)) { uris ->
             enqueueImports(uris.map { it to (it.lastPathSegment ?: "截图") })
         }
+
+    // ---- 模型管理（票 10）----
+
+    private fun startModelDownload() {
+        if (downloadJob?.isActive == true) return
+        val source = ModelManager.SOURCES[selectedSource]
+        downloadState = ModelManager.DownloadState.Running(0, -1)
+        downloadJob = lifecycleScope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    ModelManager.download(
+                        pushDir, source.url, ModelManager.MODEL_NAME,
+                        isCancelled = { downloadJob?.isCancelled == true },
+                    ) { b, t ->
+                        downloadState = ModelManager.DownloadState.Running(b, t)
+                    }
+                }
+                scanModelDir()
+                modelPrefs.edit().putBoolean("onboard_done", true).apply()
+                downloadState = ModelManager.DownloadState.Idle
+                importMsg = "模型下载完成：${file.name}"
+                Log.i(TAG, "MODEL_DOWNLOAD_DONE ${file.name}")
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) {
+                    downloadState = ModelManager.DownloadState.Idle
+                } else {
+                    Log.e(TAG, "MODEL_DOWNLOAD_FAIL", t)
+                    downloadState = ModelManager.DownloadState.Failed(t.message ?: t.toString())
+                }
+            }
+        }
+    }
+
+    private fun cancelModelDownload() {
+        // 只 cancel 不清引用：下载循环的取消检查读 downloadJob?.isCancelled，
+        // 置 null 会让检查恒为 false，循环停不下来（真机翻过车）
+        downloadJob?.cancel()
+        downloadState = ModelManager.DownloadState.Idle
+    }
+
+    /** OCR 三件套下载（票 10 补充）：RapidOCR ModelScope 公开源，三个小文件顺序下。 */
+    private var ocrDownloadState by mutableStateOf<ModelManager.DownloadState>(ModelManager.DownloadState.Idle)
+    private var ocrDownloadJob: kotlinx.coroutines.Job? = null
+
+    private fun startOcrDownload() {
+        if (ocrDownloadJob?.isActive == true) return
+        ocrDownloadState = ModelManager.DownloadState.Running(0, ModelManager.OCR_TOTAL_BYTES)
+        ocrDownloadJob = lifecycleScope.launch {
+            try {
+                var doneBytes = 0L
+                for (f in ModelManager.OCR_FILES) {
+                    val base = doneBytes
+                    withContext(Dispatchers.IO) {
+                        ModelManager.download(
+                            pushDir, f.url, f.targetName,
+                            isCancelled = { ocrDownloadJob?.isCancelled == true },
+                        ) { b, _ ->
+                            ocrDownloadState = ModelManager.DownloadState.Running(base + b, ModelManager.OCR_TOTAL_BYTES)
+                        }
+                    }
+                    doneBytes += File(pushDir, f.targetName).length()
+                }
+                scanModelDir()
+                ocrDownloadState = ModelManager.DownloadState.Idle
+                importMsg = "OCR 模型下载完成"
+                Log.i(TAG, "OCR_DOWNLOAD_DONE")
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) {
+                    ocrDownloadState = ModelManager.DownloadState.Idle
+                } else {
+                    Log.e(TAG, "OCR_DOWNLOAD_FAIL", t)
+                    ocrDownloadState = ModelManager.DownloadState.Failed(t.message ?: t.toString())
+                }
+            }
+        }
+    }
+
+    private fun cancelOcrDownload() {
+        ocrDownloadJob?.cancel()
+        ocrDownloadState = ModelManager.DownloadState.Idle
+    }
+
+    /** 下载不可用时的兜底：文件管理器选取 .litertlm 拷入模型目录。 */
+    private val pickModelFile =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) importModelUri(uri)
+        }
+
+    /** OCR 三件套无公开下载源，只能本地导入（多选 det/rec/cls ONNX）。 */
+    private val pickOcrFiles =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNotEmpty()) importOcrUris(uris)
+        }
+
+    private fun importModelUri(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                val name = queryDisplayName(uri) ?: ModelManager.MODEL_NAME
+                val target = File(pushDir, if (name.endsWith(".litertlm")) name else "$name.litertlm")
+                withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    } ?: error("无法打开所选文件")
+                }
+                scanModelDir()
+                modelPrefs.edit().putBoolean("onboard_done", true).apply()
+                importMsg = "已导入 ${target.name}（${"%.2f".format(target.length() / 1e9)} GB）"
+            } catch (t: Throwable) {
+                Log.e(TAG, "MODEL_IMPORT_FAIL", t)
+                importMsg = "导入失败：${t.message}"
+            }
+        }
+    }
+
+    private fun importOcrUris(uris: List<Uri>) {
+        lifecycleScope.launch {
+            try {
+                var copied = 0
+                withContext(Dispatchers.IO) {
+                    for (u in uris) {
+                        val name = queryDisplayName(u) ?: continue
+                        contentResolver.openInputStream(u)?.use { input ->
+                            File(pushDir, name).outputStream().use { input.copyTo(it) }
+                        } ?: continue
+                        copied++
+                    }
+                }
+                scanModelDir()
+                importMsg = "已复制 $copied 个文件：det ${if (detPath != null) "✓" else "✗"} " +
+                    "rec ${if (recPath != null) "✓" else "✗"} cls ${if (clsPath != null) "✓" else "✗"}"
+            } catch (t: Throwable) {
+                Log.e(TAG, "OCR_IMPORT_FAIL", t)
+                importMsg = "OCR 导入失败：${t.message}"
+            }
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? =
+        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+
 
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->

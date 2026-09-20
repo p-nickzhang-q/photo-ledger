@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 票 10：联网仅限模型下载（ADR-0003）；识别/记账全流程离线 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:label="@string/app_name"
         android:supportsRtl="true"
