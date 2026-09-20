@@ -49,9 +49,10 @@ fun BackupScreen(
         // ---- 备份（可回灌）----
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("备份（JSON，可回灌）", fontWeight = FontWeight.Bold)
+                Text("备份（zip，可回灌）", fontWeight = FontWeight.Bold)
                 Text(
-                    "包含全部账目与类别，不含照片。备份文件可随时导入恢复，导入会替换当前全部数据。",
+                    "包含全部账目、类别与照片。备份文件可随时导入恢复，导入会替换当前全部数据。" +
+                        "也兼容旧版 JSON 备份（不含照片）。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -59,7 +60,7 @@ fun BackupScreen(
                     Text("导出备份到文件")
                 }
                 OutlinedButton(onClick = onImportBackup, Modifier.fillMaxWidth()) {
-                    Text("从备份文件恢复")
+                    Text("从备份文件恢复（zip 或 JSON）")
                 }
             }
         }

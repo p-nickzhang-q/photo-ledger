@@ -220,4 +220,36 @@ class LedgerRepository(
             data.toEntryList().forEach { dao.insert(it) }
         }
     }
+
+    /**
+     * 完整备份打包（票 15）：json + 照片/缩略图入 zip。照片只收 Entry 引用的文件，
+     * 缺失跳过。返回 (账目数, 照片数) 供成功提示。
+     */
+    suspend fun exportBackupZip(out: java.io.OutputStream): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        val (entries, categories) = snapshot()
+        val json = BackupCodec.encode(
+            BackupCodec.fromEntities(
+                entries, categories,
+                java.time.LocalDateTime.now()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
+            ),
+        )
+        val photos = entries.mapNotNull { it.photoPath }.distinct()
+            .map { it to File(photoStore.photosDir, it) }.filter { it.second.exists() }
+        val thumbs = entries.mapNotNull { it.thumbPath }.distinct()
+            .map { it to File(photoStore.thumbsDir, it) }.filter { it.second.exists() }
+        BackupZip.write(out, json, photos, thumbs)
+        entries.size to photos.size
+    }
+
+    /**
+     * 完整备份恢复：照片文件先落盘（photoPath/thumbPath 名字即相对路径），
+     * 再走 DB 替换式恢复——文件先于库，失败不产生半截 DB 状态。
+     */
+    suspend fun restoreBackupZip(json: String, photos: Map<String, ByteArray>, thumbs: Map<String, ByteArray>) =
+        withContext(Dispatchers.IO) {
+            photos.forEach { (name, bytes) -> File(photoStore.photosDir, name).writeBytes(bytes) }
+            thumbs.forEach { (name, bytes) -> File(photoStore.thumbsDir, name).writeBytes(bytes) }
+            restore(BackupCodec.decode(json))
+        }
 }

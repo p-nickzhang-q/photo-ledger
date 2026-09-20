@@ -6,6 +6,12 @@ package io.github.pnickzhangq.photoledger.data
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 /** 备份里的类别（不带 id：id 无外部引用，恢复时重发即可；name + sortOrder 才是要保真的）。 */
 @Serializable
@@ -155,3 +161,54 @@ fun BackupData.toEntryList(): List<Entry> = entries.map {
         modifiedAt = it.modifiedAt,
     )
 }
+
+/**
+ * 完整备份包（票 15）：zip = backup.json + photos/ + thumbs/。
+ * 照片只收 Entry 引用的文件（缺失跳过不报错——悬空引用不阻断备份）；解包按前缀归位。
+ */
+object BackupZip {
+
+    const val JSON_ENTRY = "backup.json"
+
+    /** 缺失文件跳过：backup.json 永远写入，照片按存在与否收纳。 */
+    fun write(out: OutputStream, json: String, photos: List<Pair<String, File>>, thumbs: List<Pair<String, File>>) {
+        ZipOutputStream(out.buffered()).use { zip ->
+            zip.putNextEntry(ZipEntry(JSON_ENTRY))
+            zip.write(json.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            photos.forEach { addFile(zip, "photos/${it.first}", it.second) }
+            thumbs.forEach { addFile(zip, "thumbs/${it.first}", it.second) }
+        }
+    }
+
+    private fun addFile(zip: ZipOutputStream, name: String, file: File) {
+        if (!file.exists()) return
+        zip.putNextEntry(ZipEntry(name))
+        file.inputStream().use { it.copyTo(zip) }
+        zip.closeEntry()
+    }
+
+    class Contents(val json: String, val photos: Map<String, ByteArray>, val thumbs: Map<String, ByteArray>)
+
+    fun read(input: InputStream): Contents {
+        val json = StringBuilder()
+        val photos = mutableMapOf<String, ByteArray>()
+        val thumbs = mutableMapOf<String, ByteArray>()
+        var sawJson = false
+        ZipInputStream(input.buffered()).use { zip ->
+            var e = zip.nextEntry
+            while (e != null) {
+                val bytes = zip.readBytes()
+                when {
+                    e.name == JSON_ENTRY -> { json.append(bytes.toString(Charsets.UTF_8)); sawJson = true }
+                    e.name.startsWith("photos/") -> photos[e.name.removePrefix("photos/")] = bytes
+                    e.name.startsWith("thumbs/") -> thumbs[e.name.removePrefix("thumbs/")] = bytes
+                }
+                e = zip.nextEntry
+            }
+        }
+        if (!sawJson) error("不是照片记账的备份包（缺 backup.json）")
+        return Contents(json.toString(), photos, thumbs)
+    }
+}
+

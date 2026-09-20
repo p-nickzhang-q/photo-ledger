@@ -47,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import io.github.pnickzhangq.photoledger.data.BackupCodec
+import io.github.pnickzhangq.photoledger.data.BackupZip
 import io.github.pnickzhangq.photoledger.data.Entry
 import io.github.pnickzhangq.photoledger.data.ImportQueue
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
@@ -440,7 +441,7 @@ class MainActivity : ComponentActivity() {
                             pendingRestoreUri?.let { restoreFromBackup(it) }
                         },
                         onExportBackup = {
-                            exportBackupDoc.launch("photo-ledger-backup-${stamp()}.json")
+                            exportBackupDoc.launch("photo-ledger-backup-${stamp()}.zip")
                         },
                         onImportBackup = { importBackupDoc.launch(arrayOf("application/json", "text/*", "*/*")) },
                         onExportCsv = {
@@ -1055,7 +1056,7 @@ class MainActivity : ComponentActivity() {
     // ---- 备份与导出（票 11）：SAF 出入，无存储权限 ----
 
     private val exportBackupDoc =
-        registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
             if (uri != null) writeBackupTo(uri)
         }
 
@@ -1075,26 +1076,15 @@ class MainActivity : ComponentActivity() {
     private fun stamp(): String =
         java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
 
-    private suspend fun snapshotBackupText(): Pair<String, Int> {
-        val (entries, categories) = repo.snapshot()
-        val data = BackupCodec.fromEntities(
-            entries, categories,
-            java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
-        )
-        return BackupCodec.encode(data) to entries.size
-    }
-
     private fun writeBackupTo(uri: Uri) {
         lifecycleScope.launch {
             try {
-                val (text, count) = withContext(Dispatchers.IO) { snapshotBackupText() }
-                withContext(Dispatchers.IO) {
-                    contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                val (entryCount, photoCount) = withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri)?.use { repo.exportBackupZip(it) }
                         ?: error("无法写入所选位置")
                 }
-                backupMsg = "备份已导出（$count 条账目）"
-                Log.i(TAG, "BACKUP_EXPORTED count=$count")
+                backupMsg = "备份已导出（$entryCount 条账目 / $photoCount 张照片）"
+                Log.i(TAG, "BACKUP_EXPORTED entries=$entryCount photos=$photoCount")
             } catch (t: Throwable) {
                 Log.e(TAG, "BACKUP_EXPORT_FAIL", t)
                 backupMsg = "备份导出失败：${t.message}"
@@ -1123,15 +1113,31 @@ class MainActivity : ComponentActivity() {
     private fun restoreFromBackup(uri: Uri) {
         lifecycleScope.launch {
             try {
-                val text = withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                val bytes = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: error("无法读取所选文件")
                 }
-                val data = withContext(Dispatchers.IO) { BackupCodec.decode(text) }
-                repo.restore(data)
-                backupMsg = "已恢复 ${data.entries.size} 条账目 / ${data.categories.size} 个类别" +
-                    "（备份时间 ${data.exportedAt}）"
-                Log.i(TAG, "BACKUP_RESTORED entries=${data.entries.size} categories=${data.categories.size}")
+                // 文件头 PK = zip 完整备份（含照片）；否则按票 11 旧版 JSON（无照片）恢复
+                val isZip = bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()
+                val msg: String = if (isZip) {
+                    val contents = withContext(Dispatchers.IO) {
+                        BackupZip.read(bytes.inputStream())
+                    }
+                    withContext(Dispatchers.IO) {
+                        repo.restoreBackupZip(contents.json, contents.photos, contents.thumbs)
+                    }
+                    val data = BackupCodec.decode(contents.json)
+                    "已恢复 ${data.entries.size} 条账目 / ${data.categories.size} 个类别 / " +
+                        "${contents.photos.size} 张照片（备份时间 ${data.exportedAt}）"
+                } else {
+                    val text = bytes.toString(Charsets.UTF_8)
+                    val data = withContext(Dispatchers.IO) { BackupCodec.decode(text) }
+                    repo.restore(data)
+                    "已恢复 ${data.entries.size} 条账目 / ${data.categories.size} 个类别" +
+                        "（旧版备份，无照片；备份时间 ${data.exportedAt}）"
+                }
+                backupMsg = msg
+                Log.i(TAG, "BACKUP_RESTORED zip=$isZip")
             } catch (t: Throwable) {
                 Log.e(TAG, "BACKUP_RESTORE_FAIL", t)
                 backupMsg = "恢复失败：${t.message}"

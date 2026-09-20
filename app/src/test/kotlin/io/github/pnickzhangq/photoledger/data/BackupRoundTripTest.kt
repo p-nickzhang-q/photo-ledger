@@ -5,6 +5,8 @@ package io.github.pnickzhangq.photoledger.data
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.pnickzhangq.photoledger.engine.DateSource
+import com.pnickzhangq.photoledger.engine.Draft
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -14,6 +16,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
@@ -24,6 +28,17 @@ class BackupRoundTripTest {
     private lateinit var repo1: LedgerRepository
     private lateinit var repo2: LedgerRepository
     private lateinit var photoRoot: File
+    private lateinit var photoRoot2: File
+
+    private val draft = Draft(
+        merchant = "带图订单",
+        amountPaid = 9.9,
+        currency = "CNY",
+        datePaid = "2026-09-01 10:00:00",
+        dateSource = DateSource.PAYMENT_TIME,
+        orderStatus = "已完成",
+        category = "餐饮",
+    )
 
     @Before
     fun setUp() {
@@ -31,8 +46,9 @@ class BackupRoundTripTest {
         db1 = LedgerDatabase.inMemory(context)
         db2 = LedgerDatabase.inMemory(context)
         photoRoot = File(context.cacheDir, "backup-test-${System.nanoTime()}")
+        photoRoot2 = File(context.cacheDir, "backup-test2-${System.nanoTime()}")
         repo1 = LedgerRepository(db1, PhotoStore(photoRoot))
-        repo2 = LedgerRepository(db2, PhotoStore(photoRoot))
+        repo2 = LedgerRepository(db2, PhotoStore(photoRoot2))
     }
 
     @After
@@ -40,6 +56,7 @@ class BackupRoundTripTest {
         db1.close()
         db2.close()
         photoRoot.deleteRecursively()
+        photoRoot2.deleteRecursively()
     }
 
     private suspend fun seedSource() {
@@ -173,5 +190,65 @@ class BackupRoundTripTest {
         val csv = BackupCodec.toCsv(entries)
         assertTrue(!csv.contains("photos/"))
         assertTrue(!csv.contains("thumb"))
+    }
+
+    @Test
+    fun `备份 zip round-trip——照片与缩略图字节级无损`() = runTest {
+        seedSource()
+        repo1.confirm(draft, photoBytes = byteArrayOf(1, 2, 3, 4, 5))
+        // 缩略图文件手工造（PhotoStore.save 无 Bitmap 时 thumbPath 为 null；备份层只管文件字节）
+        val entry = repo1.entries.first().first { it.merchant == "带图订单" }
+        File(photoRoot, "thumbs/${entry.photoPath}").writeBytes(byteArrayOf(9, 8, 7))
+        db1.entryDao().update(entry.copy(thumbPath = entry.photoPath))
+
+        val bos = ByteArrayOutputStream()
+        val (entryCount, photoCount) = repo1.exportBackupZip(bos)
+        assertEquals(4, entryCount)
+        assertEquals(1, photoCount)
+
+        val contents = BackupZip.read(ByteArrayInputStream(bos.toByteArray()))
+        assertTrue(contents.photos.keys.single().endsWith(".png"))
+        assertTrue(contents.thumbs.keys.single().endsWith(".png"))
+        repo2.restoreBackupZip(contents.json, contents.photos, contents.thumbs)
+
+        val restored = repo2.entries.first().first { it.merchant == "带图订单" }
+        assertEquals(entry.photoPath, restored.photoPath)
+        // entry 是 update 前的旧副本（thumbPath 当时为 null），比对 photoPath 同名文件
+        assertEquals(entry.photoPath, restored.thumbPath)
+        assertEquals(
+            byteArrayOf(1, 2, 3, 4, 5).toList(),
+            File(photoRoot2, "photos/${restored.photoPath}").readBytes().toList(),
+        )
+        assertEquals(
+            byteArrayOf(9, 8, 7).toList(),
+            File(photoRoot2, "thumbs/${restored.thumbPath}").readBytes().toList(),
+        )
+    }
+
+    @Test
+    fun `备份 zip——缺失照片文件跳过不报错`() = runTest {
+        seedSource()
+        repo1.confirm(draft, photoBytes = byteArrayOf(1))
+        // 把照片文件删掉（模拟悬空引用）
+        val entry = repo1.entries.first().first { it.merchant == "带图订单" }
+        File(photoRoot, "photos/${entry.photoPath}").delete()
+
+        val bos = ByteArrayOutputStream()
+        val (_, photoCount) = repo1.exportBackupZip(bos)
+        assertEquals(0, photoCount)
+        // 备份仍可用：恢复后账目无损（照片引用悬空）
+        val contents = BackupZip.read(ByteArrayInputStream(bos.toByteArray()))
+        repo2.restoreBackupZip(contents.json, contents.photos, contents.thumbs)
+        assertEquals(4, repo2.entries.first().size)
+    }
+
+    @Test
+    fun `BackupZip read——非备份包显性失败`() {
+        try {
+            BackupZip.read(ByteArrayInputStream("not a zip".toByteArray()))
+            throw AssertionError("应当抛出")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("备份"))
+        }
     }
 }
