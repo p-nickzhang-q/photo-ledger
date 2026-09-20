@@ -33,3 +33,7 @@ local.properties
 
 # OCR 快照来自真实截图（含个人消费数据），不入库；测试用例用合成样例
 .scratch/ocr-snapshots/
+
+# 发布签名（密钥与密码不入库；丢失 .jks 将无法再发布同签名更新）
+keystore/
+keystore.properties
