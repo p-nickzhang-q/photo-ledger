@@ -34,6 +34,10 @@ interface CategoryDao {
     @Query("SELECT COUNT(*) FROM categories")
     suspend fun count(): Int
 
+    /** 备份恢复用：清表（在 withTransaction 内调用）。 */
+    @Query("DELETE FROM categories")
+    suspend fun clearAll()
+
     /** 重命名级联：类别的旧名在 Entry 中的引用一并更新。 */
     @Query("UPDATE entries SET category = :newName WHERE category = :oldName")
     suspend fun reassignEntries(oldName: String, newName: String)

@@ -32,6 +32,14 @@ interface EntryDao {
     @Query("SELECT COUNT(*) FROM entries")
     suspend fun count(): Int
 
+    /** 备份导出用：全量快照（按 id 序，保证编码稳定）。 */
+    @Query("SELECT * FROM entries ORDER BY id ASC")
+    suspend fun list(): List<Entry>
+
+    /** 备份恢复用：清表（在 withTransaction 内调用）。 */
+    @Query("DELETE FROM entries")
+    suspend fun clearAll()
+
     // ---- 汇总（票 09）----
 
     /**

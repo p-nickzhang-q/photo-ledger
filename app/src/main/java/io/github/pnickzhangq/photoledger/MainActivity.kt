@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
@@ -45,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import io.github.pnickzhangq.photoledger.data.BackupCodec
 import io.github.pnickzhangq.photoledger.data.Entry
 import io.github.pnickzhangq.photoledger.data.ImportQueue
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
@@ -58,6 +60,7 @@ import io.github.pnickzhangq.photoledger.ocr.LlamaNative
 import io.github.pnickzhangq.photoledger.ocr.OcrEngine
 import io.github.pnickzhangq.photoledger.ocr.OcrLine
 import io.github.pnickzhangq.photoledger.ocr.OnDevicePipeline
+import io.github.pnickzhangq.photoledger.ui.BackupScreen
 import io.github.pnickzhangq.photoledger.ui.CategoryManageScreen
 import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
 import io.github.pnickzhangq.photoledger.ui.DraftForm
@@ -84,6 +87,7 @@ private sealed class Page {
     data object ImportQueue : Page()   // 票 07
     data object CategoryManage : Page() // 票 08
     data object Summary : Page()        // 票 09
+    data object Backup : Page()         // 票 11：备份与导出
 }
 
 class MainActivity : ComponentActivity() {
@@ -156,6 +160,11 @@ class MainActivity : ComponentActivity() {
     private var importMsg by mutableStateOf<String?>(null)
     private var downloadJob: kotlinx.coroutines.Job? = null
     private var totalRamBytes: Long = 0L
+
+    // ---- 备份与导出（票 11）----
+    private var backupMsg by mutableStateOf<String?>(null)
+    private var showRestoreConfirm by mutableStateOf(false)
+    private var pendingRestoreUri: Uri? = null
 
     // ---- 引擎与句柄 ----
     private var ocrEngine: OcrEngine? = null
@@ -301,6 +310,7 @@ class MainActivity : ComponentActivity() {
             is Page.CategoryManage -> "类别管理"
             is Page.Summary -> "汇总"
             is Page.ModelManage -> "模型管理"
+            is Page.Backup -> "备份与导出"
             is Page.SmokeTools -> "开发工具"
         }
 
@@ -326,6 +336,9 @@ class MainActivity : ComponentActivity() {
                             }
                             IconButton(onClick = { navigate(Page.CategoryManage) }) {
                                 Icon(Icons.Filled.Category, contentDescription = "类别管理")
+                            }
+                            IconButton(onClick = { navigate(Page.Backup) }) {
+                                Icon(Icons.Filled.Backup, contentDescription = "备份与导出")
                             }
                             IconButton(onClick = { navigate(Page.ModelManage) }) {
                                 Icon(Icons.Filled.Settings, contentDescription = "模型管理")
@@ -415,6 +428,24 @@ class MainActivity : ComponentActivity() {
                             backToRoot()
                         }} else null,
                         onOpenDevTools = { navigate(Page.SmokeTools) },
+                    )
+                    is Page.Backup -> BackupScreen(
+                        entryCount = entries.size,
+                        categoryCount = categoryEntities.size,
+                        message = backupMsg,
+                        showRestoreConfirm = showRestoreConfirm,
+                        onDismissRestoreConfirm = { showRestoreConfirm = false },
+                        onConfirmRestore = {
+                            showRestoreConfirm = false
+                            pendingRestoreUri?.let { restoreFromBackup(it) }
+                        },
+                        onExportBackup = {
+                            exportBackupDoc.launch("photo-ledger-backup-${stamp()}.json")
+                        },
+                        onImportBackup = { importBackupDoc.launch(arrayOf("application/json", "text/*", "*/*")) },
+                        onExportCsv = {
+                            exportCsvDoc.launch("photo-ledger-${stamp()}.csv")
+                        },
                     )
                     is Page.Detail -> {
                         val entry = entries.firstOrNull { it.id == p.entryId }
@@ -1020,6 +1051,93 @@ class MainActivity : ComponentActivity() {
         contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
         }
+
+    // ---- 备份与导出（票 11）：SAF 出入，无存储权限 ----
+
+    private val exportBackupDoc =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+            if (uri != null) writeBackupTo(uri)
+        }
+
+    private val exportCsvDoc =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+            if (uri != null) writeCsvTo(uri)
+        }
+
+    private val importBackupDoc =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                pendingRestoreUri = uri
+                showRestoreConfirm = true
+            }
+        }
+
+    private fun stamp(): String =
+        java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
+
+    private suspend fun snapshotBackupText(): Pair<String, Int> {
+        val (entries, categories) = repo.snapshot()
+        val data = BackupCodec.fromEntities(
+            entries, categories,
+            java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
+        )
+        return BackupCodec.encode(data) to entries.size
+    }
+
+    private fun writeBackupTo(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                val (text, count) = withContext(Dispatchers.IO) { snapshotBackupText() }
+                withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                        ?: error("无法写入所选位置")
+                }
+                backupMsg = "备份已导出（$count 条账目）"
+                Log.i(TAG, "BACKUP_EXPORTED count=$count")
+            } catch (t: Throwable) {
+                Log.e(TAG, "BACKUP_EXPORT_FAIL", t)
+                backupMsg = "备份导出失败：${t.message}"
+            }
+        }
+    }
+
+    private fun writeCsvTo(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                val (entries, _) = repo.snapshot()
+                val csv = withContext(Dispatchers.IO) { BackupCodec.toCsv(entries) }
+                withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri)?.use { it.write(csv.toByteArray(Charsets.UTF_8)) }
+                        ?: error("无法写入所选位置")
+                }
+                backupMsg = "CSV 已导出（${entries.size} 条账目，Excel 可直接打开）"
+                Log.i(TAG, "CSV_EXPORTED count=${entries.size}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "CSV_EXPORT_FAIL", t)
+                backupMsg = "CSV 导出失败：${t.message}"
+            }
+        }
+    }
+
+    private fun restoreFromBackup(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        ?: error("无法读取所选文件")
+                }
+                val data = withContext(Dispatchers.IO) { BackupCodec.decode(text) }
+                repo.restore(data)
+                backupMsg = "已恢复 ${data.entries.size} 条账目 / ${data.categories.size} 个类别" +
+                    "（备份时间 ${data.exportedAt}）"
+                Log.i(TAG, "BACKUP_RESTORED entries=${data.entries.size} categories=${data.categories.size}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "BACKUP_RESTORE_FAIL", t)
+                backupMsg = "恢复失败：${t.message}"
+            }
+        }
+    }
 
 
     private val pickImage =

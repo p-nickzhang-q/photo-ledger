@@ -200,4 +200,24 @@ class LedgerRepository(
             photoStore.delete(entry.photoPath, entry.thumbPath)
         }
     }
+
+    // ---- 备份与恢复（票 11，S4 接缝）----
+
+    /** 备份导出用：全量快照（Entry + 全部类别，照片文件不在备份范围）。 */
+    suspend fun snapshot(): Pair<List<Entry>, List<CategoryEntity>> = withContext(Dispatchers.IO) {
+        dao.list() to categoryDao.list()
+    }
+
+    /**
+     * 备份恢复：事务内清表后按备份重建。Entry id 原样保回（含 createdAt/modifiedAt），
+     * 类别 id 重发（无外部引用）。语义 = 替换式恢复（round-trip 无损的基准场景）。
+     */
+    suspend fun restore(data: BackupData) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            dao.clearAll()
+            categoryDao.clearAll()
+            data.categories.forEach { categoryDao.insert(CategoryEntity(name = it.name, sortOrder = it.sortOrder)) }
+            data.toEntryList().forEach { dao.insert(it) }
+        }
+    }
 }

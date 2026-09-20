@@ -86,6 +86,9 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
+    // 票 11：备份 JSON 编解码
+    implementation(libs.kotlinx.serialization.json)
+
     // S3 接缝测试：JVM + Room 内存库（Robolectric 是 JUnit4 runner，须用 junit4）
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
