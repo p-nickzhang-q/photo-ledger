@@ -64,6 +64,70 @@ class ExtractionEngineTest {
     }
 
     @Test
+    fun `金额锚定兜底——模型抄走时间行数字时替换为唯一货币金额`() = runTest {
+        // 真机事故（09-21）：极简支付成功页无「实付款」字样，0.6B 输出 amountPaid=20.0
+        // （从「20:34 8」时间行抄的），唯一的 ¥51.60 被弃。OCR 行取自 logcat E2E_OCR_LINE。
+        val transport = FakeTransport(
+            """{"amountPaid":20.0,"datePaid":"","category":"餐饮"}""",
+        )
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("20:34 8", 0.91f, 0),
+                ln("支付成功", 1.0f, 1),
+                ln("格瑞思", 0.99f, 2),
+                ln("¥51.60", 0.93f, 3),
+                ln("完成", 1.0f, 4),
+            ),
+            fallbackYear = 2026,
+        )
+        assertEquals(1, drafts.size)
+        assertEquals(51.6, drafts[0].amountPaid, 0.001, "应被锚定为唯一的货币符号金额")
+        val prompt = transport.lastPrompt!!
+        assertTrue("20" !in prompt.substringAfter("金额数字"), "时间行数字不应进金额参考清单：$prompt")
+    }
+
+    @Test
+    fun `金额锚定兜底——支付宝账单详情页卡号污染时替换为负号金额`() = runTest {
+        // 真机事故（09-21）：淘宝闪购账单详情，模型输出 12.12（卡号尾号 1212 膨胀产物），
+        // 真实金额「-29.90」无货币符号但为负号强信号。OCR 行取自 logcat E2E_OCR_LINE。
+        val transport = FakeTransport(
+            """{"amountPaid":12.12,"datePaid":"2026-09-18","category":"餐饮"}""",
+        )
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("10:16", 1.0f, 0),
+                ln("账单详情", 1.0f, 2),
+                ln("闪购", 1.0f, 4),
+                ln("淘宝闪购", 0.90f, 5),
+                ln("-29.90", 0.96f, 6),
+                ln("交易成功", 1.0f, 7),
+                ln("支付时间", 1.0f, 8),
+                ln("2026-09-18 11:40:51", 1.0f, 9),
+                ln("付款方式", 1.0f, 10),
+                ln("工商银行储蓄卡(1212）〉", 0.95f, 11),
+                ln("商品说明", 1.0f, 12),
+                ln("七里弄堂生煎(光福店)外卖订单", 1.0f, 13),
+                ln("立即领取3积分", 1.0f, 15),
+                ln("账单分类", 1.0f, 19),
+                ln("饮美食〉", 0.89f, 20),
+            ),
+            fallbackYear = 2026,
+        )
+        assertEquals(1, drafts.size)
+        assertEquals(29.9, drafts[0].amountPaid, 0.001, "应被锚定为负号强信号金额")
+    }
+
+    @Test
     fun `低置信行不进 prompt——状态栏碎片不再带偏金额`() = runTest {
         // 真机事故（370 元转账页提取成 794）：0.57 置信度的状态栏「794」被模型当成金额。
         // 重放差分验证：仅过滤该行，模型即取回 370。

@@ -38,6 +38,7 @@ object OcrPostProcessor {
     private val SHORT_DASH = Regex("""^(\d{1,2})-(\d{1,2})(?![-\d])""")   // 「09-10」形态（不吞日期段后续）
     private val MD_HM = Regex("""^(\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}):(\d{2})$""") // 「09-10 11:19」缺年
     private val TIME_ONLY = Regex("""^\d{1,2}:\d{2}(:\d{2})?$""")   // 「10:41」「16:46:28」状态栏/角标时间
+    private val TIME_PREFIX = Regex("""^\d{1,2}:\d{2}\D""")   // 「20:34 8」时间粘连状态栏碎片（真机 51.6 被提取成 20）
 
     /**
      * 年份缺位修复（真机：行首数字被屏幕边缘切掉，「2026-09-17 20:08:46」读成「026-09-17 …」）。
@@ -109,6 +110,15 @@ object OcrPostProcessor {
 
     private val NUM = Regex("""[0-9０-９][0-9０-９，,．.]*(\.[0-9０-９]+)?""")
 
+    /** 负号开头（可带货币符号）的行：账单详情页的金额形态（「-29.90」无 ¥ 符号），强信号。 */
+    private val NEG_AMOUNT = Regex("""^-\s*[¥￥]?[0-9０-９]""")
+
+    /**
+     * 括号内 2-6 位数字：账号尾号形态（「储蓄卡(1212)」「(5447)」）。真机票 19：
+     * 卡号尾号 1212 作为裸值进候选，模型抄走当金额。这类数字永远不是实付款。
+     */
+    private val ACCT_TAIL = Regex("""[（(][0-9０-９]{2,6}[)）]""")
+
     /** 形近字符→数字（小字号 OCR 常见误读）。仅用于货币符号后的金额段，不碰普通文本。 */
     private val DIGIT_LOOKALIKES = mapOf(
         'O' to '0', 'o' to '0', 'U' to '0', 'D' to '0', 'Q' to '0',
@@ -128,10 +138,12 @@ object OcrPostProcessor {
      *   把「30」认成「3U」，旧逻辑只能给模型喂乱码导致金额瞎猜）
      * - 剥 ¥/￥ 前缀、全角转半角、千分位逗号去除
      * - 4 位纯整数且无小数点 → 视为小数点丢失（OCR 把 10.10 认成 1010），按两位小数解读；
+     *   仅在 [allowDecimalRestore]（默认开，货币符号行）时生效——裸 4 位数字（卡号尾号
+     *   「储蓄卡(1212)」）膨胀成 12.12 会污染候选池（票 19 真机：29.9 被提取成 12.12）；
      *   更长整数段（≥5 位）或带小数点的不动
      * - 找不到数字返回 null
      */
-    fun normalizeAmount(raw: String): Double? {
+    fun normalizeAmount(raw: String, allowDecimalRestore: Boolean = true): Double? {
         val symbolIdx = maxOf(raw.lastIndexOf('￥'), raw.lastIndexOf('¥'))
         val source = if (symbolIdx >= 0) {
             buildString {
@@ -151,8 +163,9 @@ object OcrPostProcessor {
         val parsed = s.toDoubleOrNull() ?: return null
         // 订单流水号/日期串是长数字序列，长于 6 位整数不可能是实付款；先剪枝再谈小数点修复
         if (!s.contains('.') && s.length > 6) return null
-        // 纯 4 位整数无小数点：订单实付常见区间 (<1000) 下 4 位整数极罕见，小数点丢失更可能
-        if (!s.contains('.') && s.length == 4 && parsed >= 1000) {
+        // 纯 4 位整数无小数点：订单实付常见区间 (<1000) 下 4 位整数极罕见，小数点丢失更可能；
+        // 只对货币符号行启用（裸 4 位数字多为卡号尾号/序号，膨胀反而造假金额）
+        if (allowDecimalRestore && !s.contains('.') && s.length == 4 && parsed >= 1000) {
             return parsed / 100.0
         }
         // 实付款合理性边界（个人消费）：0 < x < 1,000,000
@@ -200,6 +213,8 @@ object OcrPostProcessor {
         val blockText: String,
         val normalizedDates: List<String>,
         val amounts: List<Double>,
+        /** 带 ¥/￥ 货币符号行的金额——金额的最强信号，供引擎锚定兜底（anchorAmount）。 */
+        val currencyAmounts: List<Double>,
     )
 
     fun buildStructuredMaterial(lines: List<OcrLine>, contextYear: Int? = null): StructuredMaterial {
@@ -208,6 +223,7 @@ object OcrPostProcessor {
         val dates = linkedSetOf<String>()
         val preferred = linkedSetOf<String>()
         val amounts = linkedSetOf<Double>()
+        val currencyAmounts = linkedSetOf<Double>()
         var prevText = ""
         for (line in lines) {
             val date = normalizeDate(line.text, year)
@@ -219,16 +235,30 @@ object OcrPostProcessor {
                 // 候选收窄到锚定日期后，语法约束下模型无从选错。
                 if (DATE_ANCHOR_KEYWORDS.any { it in line.text || it in prevText }) preferred.add(date)
             }
-            // 金额：货币符号行是强信号，永远提取（即使行内粘连日期）；
+            // 金额：货币符号行与负号行是强信号，永远提取（即使行内粘连日期）；
             // 无符号行才剪枝——日期行/时间行/账号行的数字不是金额
             // （「2026-09-15 16:46:28」的 2026 会被 4 位整数规则修成假金额 20.26 污染候选池）
             val hasCurrency = line.text.contains('¥') || line.text.contains('￥')
+            val isSignedAmount = NEG_AMOUNT.containsMatchIn(line.text.trim())
             when {
-                hasCurrency -> normalizeAmount(line.text)?.let { amounts.add(it) }
+                hasCurrency -> normalizeAmount(line.text)?.let {
+                    amounts.add(it)
+                    currencyAmounts.add(it)
+                }
                 date == null -> {
                     val text = line.text.trim()
-                    val isJunkAmount = text.contains('@') || TIME_ONLY.containsMatchIn(text)
-                    if (!isJunkAmount) normalizeAmount(line.text)?.let { amounts.add(it) }
+                    // 时间开头的行（含时间粘连碎片的「20:34 8」）不进候选：
+                    // 时间数字被当金额参考清单喂给模型，0.6B 极简支付页就近抄走（真机 51.6→20）；
+                    // 账号尾号行（「储蓄卡(1212)」）同理出局（真机 29.9 被抄成 1212）
+                    val isJunkAmount = text.contains('@') ||
+                        TIME_ONLY.containsMatchIn(text) ||
+                        TIME_PREFIX.containsMatchIn(text) ||
+                        ACCT_TAIL.containsMatchIn(text)
+                    if (!isJunkAmount) normalizeAmount(line.text, allowDecimalRestore = false)?.let {
+                        amounts.add(it)
+                        // 负号行（「-29.90」）是账单详情页的金额形态，与货币符号同级强信号
+                        if (isSignedAmount) currencyAmounts.add(it)
+                    }
                 }
             }
             prevText = line.text
@@ -237,7 +267,27 @@ object OcrPostProcessor {
             block.joinToString("\n") { cleanLineText(it.text) }
         }
         val effectiveDates = if (preferred.isNotEmpty()) preferred.toList() else dates.toList()
-        return StructuredMaterial(blockText = text, normalizedDates = effectiveDates, amounts = amounts.toList())
+        return StructuredMaterial(
+            blockText = text,
+            normalizedDates = effectiveDates,
+            amounts = amounts.toList(),
+            currencyAmounts = currencyAmounts.toList(),
+        )
+    }
+
+    /**
+     * 金额锚定兜底（真机 51.6→20 事故）：极简支付成功页无「实付款」字样，0.6B 从
+     * 「20:34 8」时间行抄走 20，唯一的「¥51.60」被弃。货币符号行是金额的最强信号：
+     * 区块内恰有一个货币金额、模型输出不等于它、且模型输出也没有任何候选金额背书时，
+     * 确定性替换。「实付款 20」这类无符号纯数字行仍是合法候选（有背书不干预），
+     * 多个货币金额（原价/实付并存）时也不干预——有标签时模型通常选得对。
+     */
+    fun anchorAmount(draft: Draft, material: StructuredMaterial): Draft {
+        if (material.currencyAmounts.size != 1) return draft
+        val only = material.currencyAmounts.single()
+        if (kotlin.math.abs(draft.amountPaid - only) < 0.005) return draft
+        if (material.amounts.any { kotlin.math.abs(it - draft.amountPaid) < 0.005 }) return draft
+        return draft.copy(amountPaid = only)
     }
 
     /**

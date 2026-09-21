@@ -51,7 +51,9 @@ class ExtractionEngine(
             // 日期选择编码进文法：有候选=候选+空串；无候选=锁死空串（模型无法编造日期）
             val dateGrammar = GrammarGenerator.withDateAlternatives(grammar, dateOnly)
             val raw = transport.completeText(prompt, dateGrammar)
-            DraftNormalizer.parse(raw, categories)
+            // 金额锚定兜底（真机 51.6→20）：唯一的货币符号金额与模型输出冲突时确定性替换
+            val draft = DraftNormalizer.parse(raw, categories)
+            OcrPostProcessor.anchorAmount(draft, material)
         }
     }
 }

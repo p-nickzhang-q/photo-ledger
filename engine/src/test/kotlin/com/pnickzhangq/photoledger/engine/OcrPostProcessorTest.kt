@@ -181,6 +181,99 @@ class OcrPostProcessorTest {
         assertTrue(544.0 !in m.amounts)
     }
 
+    @Test
+    fun `时间行粘连碎片的数字不进金额候选——真机 51点6 被提取成 20`() {
+        // 真机事故（09-21）：极简支付成功页 OCR 行「20:34 8」尾粘状态栏碎片，
+        // TIME_ONLY 整行匹配拦不住，20 进了金额参考清单被 0.6B 抄走
+        val lines = listOf(
+            line("20:34 8", 0),
+            line("支付成功", 1),
+            line("格瑞思", 2),
+            line("¥51.60", 3),
+            line("完成", 4),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertTrue(20.0 !in m.amounts, "时间行数字不应进候选：${m.amounts}")
+        assertEquals(listOf(51.6), m.amounts)
+        // 货币符号金额单独成列（引擎锚定用）
+        assertEquals(listOf(51.6), m.currencyAmounts)
+    }
+
+    @Test
+    fun `卡号尾号裸4位不膨胀 负号行进强信号——真机 29点9 被提取成 12点12`() {
+        // 真机事故（09-21）：支付宝账单详情页，真实金额「-29.90」无 ¥ 符号；
+        // 「工商银行储蓄卡(1212）〉」的卡号尾号被 4 位 ÷100 规则膨胀成 12.12 进候选，
+        // 模型抄走 12.12。修复：裸 4 位不膨胀；负号行与货币符号同级强信号。
+        val lines = listOf(
+            line("账单详情", 0),
+            line("淘宝闪购", 1),
+            line("-29.90", 2),
+            line("交易成功", 3),
+            line("支付时间", 4),
+            line("2026-09-18 11:40:51", 5),
+            line("付款方式", 6),
+            line("工商银行储蓄卡(1212）〉", 7),
+            line("商品说明", 8),
+            line("七里弄堂生煎(光福店)外卖订单", 9),
+            line("立即领取3积分", 10),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertTrue(12.12 !in m.amounts, "卡号尾号不应膨胀成 12.12：${m.amounts}")
+        assertTrue(1212.0 !in m.amounts, "账号尾号行整体不进候选：${m.amounts}")
+        assertTrue(29.9 in m.amounts)
+        assertEquals(listOf(29.9), m.currencyAmounts, "负号行应与货币符号同级进强信号")
+    }
+
+    @Test
+    fun `货币金额候选——多符号行按出现序去重`() {
+        val lines = listOf(
+            line("商品总价 ￥79.00", 0),
+            line("优惠 -¥27.40", 1),
+            line("实付款 ¥51.60", 2),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertEquals(listOf(79.0, 27.4, 51.6), m.currencyAmounts)
+    }
+
+    // ---------- 金额锚定兜底（引擎层） ----------
+
+    @Test
+    fun `锚定兜底——模型输出无候选背书时替换为唯一货币金额`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "20:34 8\n支付成功\n格瑞思\n¥51.60\n完成",
+            normalizedDates = emptyList(),
+            amounts = listOf(51.6), // 20 已被时间行过滤，不背书
+            currencyAmounts = listOf(51.6),
+        )
+        val draft = Draft(amountPaid = 20.0, datePaid = "", category = "餐饮")
+        val anchored = OcrPostProcessor.anchorAmount(draft, material)
+        assertEquals(51.6, anchored.amountPaid, 0.001)
+    }
+
+    @Test
+    fun `锚定兜底——模型输出有候选背书时不干预`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "实付款 20\n¥51.60",
+            normalizedDates = emptyList(),
+            amounts = listOf(20.0, 51.6),
+            currencyAmounts = listOf(51.6),
+        )
+        val draft = Draft(amountPaid = 20.0, datePaid = "", category = "餐饮")
+        assertEquals(20.0, OcrPostProcessor.anchorAmount(draft, material).amountPaid, 0.001)
+    }
+
+    @Test
+    fun `锚定兜底——多个货币金额时不干预`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "￥79.00\n实付款 ¥51.60",
+            normalizedDates = emptyList(),
+            amounts = listOf(79.0, 51.6),
+            currencyAmounts = listOf(79.0, 51.6),
+        )
+        val draft = Draft(amountPaid = 79.0, datePaid = "", category = "餐饮")
+        assertEquals(79.0, OcrPostProcessor.anchorAmount(draft, material).amountPaid, 0.001)
+    }
+
     // ---------- 行文本清理（真机回归：一图两单商家行被抄进 UI 符号/截断碎片） ----------
 
     @Test
