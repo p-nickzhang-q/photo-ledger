@@ -37,3 +37,4 @@ local.properties
 # 发布签名（密钥与密码不入库；丢失 .jks 将无法再发布同签名更新）
 keystore/
 keystore.properties
+.scratch/new-samples/
