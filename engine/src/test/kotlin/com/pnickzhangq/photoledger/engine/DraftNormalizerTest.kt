@@ -50,6 +50,14 @@ class DraftNormalizerTest {
     }
 
     @Test
+    fun `金额超出合理上限时拒绝——模型抄状态栏数字生成天文数字`() {
+        // 真机事故（09-21）：模型把状态栏「89」抄成 200 多位零，JSON 撑爆 token 截断
+        val json = """{"merchant":"x","amountPaid":8.9E298,"datePaid":"2026-09-21","category":"其他"}"""
+        val e = assertFailsWith<ExtractionParseException> { DraftNormalizer.parse(json, categories) }
+        assertEquals(true, e.message!!.contains("合理范围"))
+    }
+
+    @Test
     fun `非 JSON 输入时抛 ExtractionParseException`() {
         assertFailsWith<ExtractionParseException> {
             DraftNormalizer.parse("好的，以下是提取结果：{...}", categories)

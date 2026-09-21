@@ -225,6 +225,29 @@ class OcrPostProcessorTest {
     }
 
     @Test
+    fun `首个独立两位小数行进强信号——负号被 OCR 丢失的账单金额`() {
+        // 真机事故（09-21）：微信账单详情「-15.40」负号没读出来，金额成无符号裸数字，
+        // 模型抄状态栏「89」生成天文数字。区块首个「整数.两位小数」行 = 卡片头部金额。
+        val lines = listOf(
+            line("11:14 @", 0),
+            line("淘", 1),
+            line("接单", 3),
+            line("89", 4),
+            line("淘宝平台商户「", 8),
+            line("15.40", 9),
+            line("当前状态", 10),
+            line("支付成功", 11),
+            line("支付时间", 12),
+            line("2026年9月21日11:12:48", 13),
+            line("4500000428202609219922282793", 21),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertEquals(listOf(15.4), m.currencyAmounts, "首个独立两位小数行应为强信号")
+        assertTrue(15.4 in m.amounts)
+        assertTrue(89.0 in m.amounts, "裸整数仍有候选背书（但无强信号）")
+    }
+
+    @Test
     fun `货币金额候选——多符号行按出现序去重`() {
         val lines = listOf(
             line("商品总价 ￥79.00", 0),

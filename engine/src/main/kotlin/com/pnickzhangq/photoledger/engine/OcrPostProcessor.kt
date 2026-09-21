@@ -26,9 +26,13 @@ object OcrPostProcessor {
     /**
      * OCR 行进 prompt 的最低置信度。正常文本行普遍 >0.9；低于此值的碎片
      * （状态栏数字、误识别块）会带偏 0.6B 的金额选择——真机案例：0.57 的状态栏
-     * 「794」被当成金额，370 元转账页提取成 794。过滤放在 extractFromOcr 入口。
+     * 「794」被当成金额，370 元转账页提取成 794。
+     * 阈值 0.78（票 20）：0.7 时真机状态栏「89」(0.73) 过线，模型抄走后生成
+     * 200 多位零的天文数字撑爆输出。0.85 会误伤拍摄照片里的正常行
+     * （order_12 哨兵图 100%→96.7% 回归实测），0.78 分界兼顾两侧。
+     * 过滤放在 extractFromOcr 入口。
      */
-    const val MIN_LINE_SCORE = 0.7f
+    const val MIN_LINE_SCORE = 0.78f
 
     // ---------- 日期规范化 ----------
 
@@ -118,6 +122,13 @@ object OcrPostProcessor {
      * 卡号尾号 1212 作为裸值进候选，模型抄走当金额。这类数字永远不是实付款。
      */
     private val ACCT_TAIL = Regex("""[（(][0-9０-９]{2,6}[)）]""")
+
+    /**
+     * 独立「整数.两位小数」行：账单详情页金额的通用形态（微信「15.40」负号被 OCR
+     * 丢失、支付宝「-29.90」、转账「-370.00」都命中）。区块内首个该形态行视为强信号——
+     * 两个 App 都把交易金额放在卡片头部、标签行之前。
+     */
+    private val AMOUNT_STANDALONE = Regex("""^[+-]?[0-9０-９]{1,7}\.[0-9０-９]{2}$""")
 
     /** 形近字符→数字（小字号 OCR 常见误读）。仅用于货币符号后的金额段，不碰普通文本。 */
     private val DIGIT_LOOKALIKES = mapOf(
@@ -224,6 +235,7 @@ object OcrPostProcessor {
         val preferred = linkedSetOf<String>()
         val amounts = linkedSetOf<Double>()
         val currencyAmounts = linkedSetOf<Double>()
+        var firstDecimalAnchored = false
         var prevText = ""
         for (line in lines) {
             val date = normalizeDate(line.text, year)
@@ -256,8 +268,15 @@ object OcrPostProcessor {
                         ACCT_TAIL.containsMatchIn(text)
                     if (!isJunkAmount) normalizeAmount(line.text, allowDecimalRestore = false)?.let {
                         amounts.add(it)
-                        // 负号行（「-29.90」）是账单详情页的金额形态，与货币符号同级强信号
+                        // 负号行（「-29.90」）与区块首个独立两位小数行（「15.40」，负号
+                        // 可能被 OCR 丢）是账单详情页的金额形态，与货币符号同级强信号
                         if (isSignedAmount) currencyAmounts.add(it)
+                    }
+                    if (!firstDecimalAnchored && AMOUNT_STANDALONE.containsMatchIn(text)) {
+                        normalizeAmount(text, allowDecimalRestore = false)?.let {
+                            currencyAmounts.add(it)
+                            firstDecimalAnchored = true
+                        }
                     }
                 }
             }

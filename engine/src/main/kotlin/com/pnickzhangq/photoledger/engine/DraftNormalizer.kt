@@ -35,6 +35,9 @@ object DraftNormalizer {
         val amount = root["amountPaid"]!!.jsonPrimitive.doubleOrNull
             ?: throw ExtractionParseException("amountPaid 不是数字：${root["amountPaid"]}")
         if (amount < 0) throw ExtractionParseException("amountPaid 为负：$amount")
+        // 个人消费合理上限与 OcrPostProcessor.normalizeAmount 同口径；真机事故：模型把
+        // 状态栏「89」抄成 200 多位零的天文数字，必须在源头拦下而非入库/上屏
+        if (amount >= 1_000_000.0) throw ExtractionParseException("金额超出合理范围（>100 万），识别结果不可信")
         val datePaid = root["datePaid"]!!.jsonPrimitive.content
         val category = root["category"]!!.jsonPrimitive.content
         if (category !in categories) {
