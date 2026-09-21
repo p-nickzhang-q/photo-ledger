@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import io.github.pnickzhangq.photoledger.data.ImportItem
 import io.github.pnickzhangq.photoledger.data.ImportState
+import kotlinx.coroutines.delay
 
 @Composable
 fun ImportQueueScreen(
@@ -153,8 +155,8 @@ private fun ImportItemCard(
                         Text(
                             text = when (val s = item.state) {
                                 is ImportState.Pending -> "排队中"
-                                is ImportState.Processing -> "提取中…"
-                                is ImportState.Failed -> "失败：${s.reason}"
+                                is ImportState.Processing -> "提取中…${elapsedSeconds(item)}s"
+                                is ImportState.Failed -> "失败（${item.durationMs ?: 0}ms）：${s.reason}"
                                 is ImportState.Duplicate -> "这张已导入过"
                                 else -> ""
                             },
@@ -162,14 +164,14 @@ private fun ImportItemCard(
                         )
                     } else if (confirmedState != null) {
                         Text(
-                            "已全部入账，可在账目列表点开编辑",
+                            "已全部入账，可在账目列表点开编辑（提取 ${((item.durationMs ?: 0) / 100f).toInt() / 10f}s）",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     } else if (doneState != null) {
                         val left = doneState.drafts.size - doneState.confirmed.size
                         Text(
-                            if (left == doneState.drafts.size) "识别到 ${left} 单，逐单确认入账"
-                            else "还剩 $left 单未入账",
+                            (if (left == doneState.drafts.size) "识别到 ${left} 单，逐单确认入账" else "还剩 $left 单未入账") +
+                                "（提取 ${((item.durationMs ?: 0) / 100f).toInt() / 10f}s）",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -212,6 +214,22 @@ private fun ImportItemCard(
             }
         }
     }
+}
+
+/** 提取中的实时计时（秒）：500ms 步进刷新，终态不调用。 */
+@Composable
+private fun elapsedSeconds(item: ImportItem): Int {
+    val startedAt = item.startedAtMs
+    var elapsed by remember(item.hash) {
+        mutableStateOf(((System.currentTimeMillis() - (startedAt ?: System.currentTimeMillis())) / 1000).toInt())
+    }
+    LaunchedEffect(item.hash) {
+        while (true) {
+            delay(500)
+            elapsed = ((System.currentTimeMillis() - (startedAt ?: return@LaunchedEffect)) / 1000).toInt()
+        }
+    }
+    return elapsed
 }
 
 /** 全屏原图预览：双指缩放（1-5x）+ 拖动，右上角关闭，点黑底也可关闭。 */

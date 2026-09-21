@@ -53,6 +53,10 @@ data class ImportItem(
     val hash: String,
     /** 截图文件修改时间（≈支付时间）。空日期草稿确认时的兜底，优先于「导入当天」。 */
     val fallbackDate: String? = null,
+    /** 开始提取的时刻（Processing 起置值）——UI 计时展示用。 */
+    val startedAtMs: Long? = null,
+    /** 提取耗时（进入终态时写入）。 */
+    val durationMs: Long? = null,
 )
 
 class ImportQueue(
@@ -119,9 +123,10 @@ class ImportQueue(
                 if (next < 0) break
                 val item = mutex.withLock { _items.value[next] }
                 // 标 Processing（状态事件序列：Pending → Processing → 终态，S2 可观测）
+                val startedAt = System.currentTimeMillis()
                 mutex.withLock {
                     _items.value = _items.value.toMutableList().also {
-                        it[next] = item.copy(state = ImportState.Processing)
+                        it[next] = item.copy(state = ImportState.Processing, startedAtMs = startedAt)
                     }
                 }
                 val outcome = try {
@@ -129,6 +134,7 @@ class ImportQueue(
                 } catch (t: Throwable) {
                     ExtractionOutcome.Failure("提取异常：${t.message}")
                 }
+                val durationMs = System.currentTimeMillis() - startedAt
                 val finalState = when (outcome) {
                     is ExtractionOutcome.Success -> ImportState.Done(outcome.drafts)
                     is ExtractionOutcome.Failure -> {
@@ -139,7 +145,7 @@ class ImportQueue(
                 }
                 mutex.withLock {
                     _items.value = _items.value.toMutableList().also {
-                        it[next] = item.copy(state = finalState)
+                        it[next] = item.copy(state = finalState, startedAtMs = startedAt, durationMs = durationMs)
                     }
                 }
             }
