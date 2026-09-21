@@ -79,6 +79,7 @@ import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.Draft
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -132,6 +133,22 @@ class MainActivity : ComponentActivity() {
     // 若为普通变量，Compose 感知不到创建，页面会卡在空态不刷新（真机 bug）。
     private var importQueue: ImportQueue? by mutableStateOf(null)
     private var importExtractor: ImportQueue.Extractor? = null
+
+    // 票 17：transport/OCR 引擎的创建互斥——启动预加载与队列首张提取并发时不得重复加载
+    private val engineMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** 票 17：模型就绪时启动即后台预加载（transport ~15s + OCR 引擎），首批导入零冷加载等待。 */
+    private fun preloadEngines() {
+        if (litertlmPath == null || detPath == null || recPath == null) return
+        lifecycleScope.launch {
+            val t0 = System.currentTimeMillis()
+            runCatching {
+                ensureOcrEngine()
+                obtainQueueTransport()
+            }.onFailure { Log.w(TAG, "PRELOAD_FAIL $it") }
+            Log.i(TAG, "PRELOAD_DONE ms=${System.currentTimeMillis() - t0}")
+        }
+    }
 
     // ---- 冒烟 UI 状态 ----
     private val status = mutableStateOf("工具页：选图/OCR/推理（票04/05 冒烟入口）")
@@ -196,6 +213,9 @@ class MainActivity : ComponentActivity() {
 
         // 票 07：系统分享（SEND 单张 / SEND_MULTIPLE 多张）→ 导入队列
         handleShareIntent(intent)
+
+        // 票 17：模型就绪即后台预加载——拍照等待从「冷加载 15s + 提取 5s」缩到 ~5s
+        preloadEngines()
 
         setContent {
             LedgerTheme {
@@ -532,7 +552,7 @@ class MainActivity : ComponentActivity() {
     /** 队列常驻 transport（票 07 提速）：批内每张不再新建/销毁引擎（原每张白付 ~4s 加载）。 */
     private var queueTransport: LitertLlmTransport? = null
 
-    private fun obtainQueueTransport(): LitertLlmTransport {
+    private suspend fun obtainQueueTransport(): LitertLlmTransport = engineMutex.withLock {
         queueTransport?.let { return it }
         val modelPath = litertlmPath?.let(::File)?.takeIf(File::exists)?.absolutePath
             ?: error("缺识别模型：请到「模型管理」页下载或导入")
@@ -549,18 +569,23 @@ class MainActivity : ComponentActivity() {
             ).also { it.ensureLoaded() }
         }
         queueTransport = t
-        return t
+        t
+    }
+
+    /** 票 17：OCR 引擎创建收进互斥（预加载与首张提取并发时不得重复建）。 */
+    private suspend fun ensureOcrEngine(): OcrEngine = engineMutex.withLock {
+        ocrEngine ?: OcrEngine(
+            detModel = File(detPath ?: error("缺 det.onnx")),
+            recModel = File(recPath ?: error("缺 rec.onnx")),
+            clsModel = clsPath?.let(::File),
+            threads = 4,
+        ).also { ocrEngine = it }
     }
 
     /** 真实提取器：截图字节 → 解码像素 → OnDevicePipeline（transport 常驻复用）。 */
     private fun makeImportExtractor(): ImportQueue.Extractor {
         return ImportQueue.Extractor { bytes ->
-            val engine = ocrEngine ?: OcrEngine(
-                detModel = File(detPath ?: error("缺 det.onnx")),
-                recModel = File(recPath ?: error("缺 rec.onnx")),
-                clsModel = clsPath?.let(::File),
-                threads = 4,
-            ).also { ocrEngine = it }
+            val engine = ensureOcrEngine()
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 ?: return@Extractor io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Failure("图片解码失败")
             val pixels = IntArray(bmp.width * bmp.height)
@@ -599,10 +624,32 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Log.i(TAG, "IMPORT_ENQUEUE $name bytes=${bytes?.size ?: -1}")
-                if (bytes != null) queue.enqueue(bytes, name)
+                if (bytes != null) queue.enqueue(bytes, name, queryCaptureDate(uri))
             }
             queue.runPending()
         }
+    }
+
+    /**
+     * 票 19：截图文件修改时间 ≈ 支付/截图时间——微信支付成功页整页无日期文字，
+     * 空日期草稿以此兜底，比「导入当天」准（补导历史截图不记错天）。取不到返回 null。
+     */
+    private fun queryCaptureDate(uri: Uri): String? = try {
+        contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DATE_MODIFIED), null, null, null)
+            ?.use { c ->
+                if (c.moveToFirst()) {
+                    val sec = c.getLong(0)
+                    if (sec > 0) {
+                        java.time.Instant.ofEpochSecond(sec)
+                            .atZone(java.time.ZoneId.systemDefault())
+                            .toLocalDate()
+                            .toString()
+                    } else null
+                } else null
+            }
+    } catch (t: Throwable) {
+        Log.w(TAG, "CAPTURE_DATE_FAIL uri=$uri $t")
+        null
     }
 
     /** 队列 Done 项逐单入账（一图多单）。无日期草稿由队列层自动填导入当天。 */
@@ -1218,6 +1265,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         runCatching { ocrEngine?.close() }
+        runCatching { queueTransport?.close() }   // 票 17：Activity 重建不再泄漏旧 transport
+        queueTransport = null
         if (ctxPtr != 0L) runCatching { LlamaNative.freeContext(ctxPtr) }
         if (modelPtr != 0L) runCatching { LlamaNative.freeModel(modelPtr) }
         runCatching { LlamaNative.backendFree() }

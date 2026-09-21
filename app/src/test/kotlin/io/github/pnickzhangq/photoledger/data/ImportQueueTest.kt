@@ -311,4 +311,29 @@ class ImportQueueTest {
         assertEquals(java.time.LocalDate.now().toString(), confirmed.datePaid)
         assertEquals(java.time.LocalDate.now().toString(), db.entryDao().observeAll().first().single().datePaid)
     }
+
+    @Test
+    fun `无日期草稿优先用截图文件日期兜底——补导历史截图不记错天`() = runTest {
+        // 票 19：微信支付成功页整页无日期，截图 mtime（≈支付时间）优先于「导入当天」
+        val noDate = draftA.copy(datePaid = "")
+        val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(noDate))))
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png", fallbackDate = "2026-09-13")
+        queue.runPending()
+
+        val confirmed = queue.confirmAll(queue.items.value[0]).single()
+        assertEquals("2026-09-13", confirmed.datePaid)
+        assertEquals("2026-09-13", db.entryDao().observeAll().first().single().datePaid)
+    }
+
+    @Test
+    fun `有日期草稿不受兜底影响`() = runTest {
+        val fake = FakeExtractor(mapOf("image-one" to ExtractionOutcome.Success(listOf(draftA))))
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png", fallbackDate = "2026-09-13")
+        queue.runPending()
+
+        val confirmed = queue.confirmAll(queue.items.value[0]).single()
+        assertEquals("2026-08-18", confirmed.datePaid.take(10))
+    }
 }

@@ -51,6 +51,8 @@ data class ImportItem(
     val state: ImportState,
     /** 内容哈希（SHA-256 hex），去重键。 */
     val hash: String,
+    /** 截图文件修改时间（≈支付时间）。空日期草稿确认时的兜底，优先于「导入当天」。 */
+    val fallbackDate: String? = null,
 )
 
 class ImportQueue(
@@ -90,13 +92,13 @@ class ImportQueue(
      * 入队一张截图。入队时即做哈希去重（同批已入队/历史已入库）——重复项直接标 Duplicate，
      * 不进 Pending、不消耗提取。返回是否真正入队。
      */
-    suspend fun enqueue(bytes: ByteArray, displayName: String): Boolean = mutex.withLock {
+    suspend fun enqueue(bytes: ByteArray, displayName: String, fallbackDate: String? = null): Boolean = mutex.withLock {
         val hash = sha256(bytes)
         if (hash in importedHashes || _items.value.any { it.hash == hash && it.state !is ImportState.Failed }) {
-            _items.value += ImportItem(bytes, displayName, ImportState.Duplicate, hash)
+            _items.value += ImportItem(bytes, displayName, ImportState.Duplicate, hash, fallbackDate)
             return true
         }
-        _items.value += ImportItem(bytes, displayName, ImportState.Pending, hash)
+        _items.value += ImportItem(bytes, displayName, ImportState.Pending, hash, fallbackDate)
         importedHashes += hash // 同批去重：入队即记；提取失败在 runPending 回退
         return true
     }
@@ -171,7 +173,8 @@ class ImportQueue(
         if (index !in state.drafts.indices || index in state.confirmed) return null
         val draft = state.drafts[index]
         val effective = if (draft.datePaid.isBlank()) {
-            draft.copy(datePaid = java.time.LocalDate.now().toString())
+            // 空日期兜底：截图文件时间（≈支付时间）优先于「导入当天」——补导历史截图不记错天
+            draft.copy(datePaid = _items.value[idx].fallbackDate ?: java.time.LocalDate.now().toString())
         } else {
             draft
         }
