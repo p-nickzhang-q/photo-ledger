@@ -41,8 +41,12 @@ class ExtractionEngine(
     ): List<Draft> {
         val usable = lines.filter { it.score >= OcrPostProcessor.MIN_LINE_SCORE }
         if (usable.isEmpty()) return emptyList()
-        val blocks = OcrPostProcessor.splitOrderBlocks(usable)
-        val year = OcrPostProcessor.guessContextYear(usable) ?: fallbackYear
+        // 票 23 提速：逐行丢弃噪音行（详情页的 UI 动作/运营位行不进
+        // blockText 与金额/日期候选，prompt token 与假金额参考同步减少）
+        val trimmed = OcrPostProcessor.trimNoiseTail(usable)
+        if (trimmed.isEmpty()) return emptyList()
+        val blocks = OcrPostProcessor.splitOrderBlocks(trimmed)
+        val year = OcrPostProcessor.guessContextYear(trimmed) ?: fallbackYear
         return blocks.map { block ->
             val material = OcrPostProcessor.buildStructuredMaterial(block, year)
             // 票 07 提速：日期只到天——候选与 prompt 清单都截到 YYYY-MM-DD（去重）

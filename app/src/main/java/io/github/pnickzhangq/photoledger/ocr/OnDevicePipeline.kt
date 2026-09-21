@@ -67,6 +67,8 @@ class OnDevicePipeline(
             val drafts = engine.extractFromOcr(lines.toEngineLines(), fallbackYear)
             val t2 = System.currentTimeMillis()
             val postMs = 0L  // 后处理在 extractFromOcr 内部，计入 LLM 段
+            // 票 23：LLM 段耗时单列——队列路径原来只有总量，10s 体感无法定位是 OCR 还是解码
+            android.util.Log.i("OnDevicePipeline", "E2E_LLM ms=${t2 - t1} drafts=${drafts.size}")
             if (drafts.isEmpty()) {
                 ExtractResult.Failure("识别到 ${lines.size} 行文本，但未找到订单块（无「实付款」特征）")
             } else {

@@ -9,6 +9,7 @@ import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ResponseFormat
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.pnickzhangq.photoledger.engine.GrammarGenerator
@@ -46,8 +47,11 @@ class LitertLlmTransport(
     override suspend fun complete(imageData: ByteArray, imageMime: String, prompt: String, grammar: String): String =
         throw UnsupportedOperationException("端侧 LiteRT 路线只走 OCR+文本（ADR-0004），不支持图像直入")
 
+    @OptIn(ExperimentalApi::class)
     override suspend fun completeText(prompt: String, grammar: String): String = withContext(Dispatchers.Default) {
         val e = engine ?: run { ensureLoaded(); engine!! }
+        // 票 23 诊断：conversation 重建是每次提取的固定开销（真机 ~2s），单独计时定位
+        val tConv = System.currentTimeMillis()
         val conversation = e.createConversation(
             ConversationConfig(
                 samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0), // 贪心，对齐 llama.cpp
@@ -55,6 +59,7 @@ class LitertLlmTransport(
                 enableResponseFormat = true,
             ),
         )
+        Log.i(TAG, "LITERT_CONV_CREATE ms=${System.currentTimeMillis() - tConv}")
         val t0 = System.currentTimeMillis()
         val schema = GrammarGenerator.toJsonSchema(grammar)
         try {
@@ -74,6 +79,8 @@ class LitertLlmTransport(
                 (c as? com.google.ai.edge.litertlm.Content.Text)?.text ?: ""
             }
             Log.i(TAG, "SMOKE_LITERT_OK ms=${System.currentTimeMillis() - t0} len=${out.length} out=$out")
+            // 票 23 诊断：TTFT/prefill/decode 吞吐（runtime 自报），拆解 sendMessage 内部耗时
+            Log.i(TAG, "LITERT_BENCH ${conversation.getBenchmarkInfo()}")
             // 票 13 实测：LLGuidance 约束下 JSON Schema enum 字段输出双重编码
             // （"currency": "\"CNY\""），字符串字段值带一层字面引号。出口清洗：
             // 把 "…"（字面引号包裹的值）还原为裸值。自由字符串字段（merchant 等）

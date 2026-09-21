@@ -395,6 +395,114 @@ class OcrPostProcessorTest {
         assertEquals(listOf("第一行", "第一行右", "第二行"), texts)
     }
 
+    // ---------- 噪音行丢弃（票 23，用例取自真机 10 张转储） ----------
+
+    @Test
+    fun `微信账单详情——动作区行丢弃，核心字段保留`() {
+        val lines = listOf(
+            line("全部账单", y = 200),
+            line("围炉锅盔金鹰店", y = 300),
+            line("-9.90", y = 400),
+            line("当前状态", y = 500),
+            line("支付成功", y = 550),
+            line("支付时间", y = 600),
+            line("2026年9月13日19:19:25", y = 650),
+            line("商品", y = 700),
+            line("Mobile Pay", y = 750),
+            line("交易单号", y = 800),
+            line("4200003148202609134166711260", y = 850),
+            line("账单服务", y = 900),
+            line("对订单有疑惑", y = 950),
+            line("发起群收款", y = 1000),
+            line("申请电子凭证", y = 1050),
+        )
+        val trimmed = OcrPostProcessor.trimNoiseTail(lines)
+        assertTrue(trimmed.none { "账单服务" in it.text || "发起群收款" in it.text || "申请电子" in it.text || "对订单有疑惑" in it.text })
+        // 核心字段保留
+        assertTrue(trimmed.any { it.text == "-9.90" })
+        assertTrue(trimmed.any { it.text.startsWith("2026年9月13日") })
+        // 单号标签与长数字串无关键词不丢弃（金额归一层自行剪枝，代价只是两行 token）
+        assertTrue(trimmed.any { it.text.startsWith("4200") })
+    }
+
+    @Test
+    fun `支付宝账单详情——运营位行丢弃`() {
+        val lines = listOf(
+            line("账单详情", y = 200),
+            line("淘宝闪购", y = 300),
+            line("-29.90", y = 400),
+            line("支付时间", y = 500),
+            line("2026-09-18 11:40:51", y = 550),
+            line("商品说明", y = 600),
+            line("七里弄堂生煎(光福店)外卖订单", y = 650),
+            line("支付奖励", y = 700),
+            line("立即领取3积分", y = 750),
+            line("为您推荐", y = 800),
+            line("外卖+", y = 850),
+            line("备注", y = 900),
+            line("再转一笔", y = 950),
+        )
+        val trimmed = OcrPostProcessor.trimNoiseTail(lines)
+        assertTrue(trimmed.none { "积分" in it.text || "再转一笔" in it.text || "为您推荐" in it.text })
+        assertTrue(trimmed.any { it.text == "-29.90" })
+        assertTrue(trimmed.any { it.text.startsWith("七里弄堂生煎") })
+    }
+
+    @Test
+    fun `收银台详情——广告促销行丢弃`() {
+        val lines = listOf(
+            line("支付成功", y = 200),
+            line("实付：", y = 300),
+            line("￥39.5", y = 350),
+            line("商户名称：", y = 400),
+            line("顶足便利店", y = 450),
+            line("下单时间：", y = 500),
+            line("2026-09-1720:08:46", y = 550),
+            line("广告", y = 600),
+            line("微信代金券", y = 650),
+            line("活动时间：2026年4月1日：12月31日（每日00:00:00-23:59:59）", y = 700),
+        )
+        val trimmed = OcrPostProcessor.trimNoiseTail(lines)
+        assertTrue(trimmed.none { it.text.startsWith("活动时间") || "代金券" in it.text || it.text == "广告" })
+        assertTrue(trimmed.any { it.text == "￥39.5" })
+        assertTrue(trimmed.any { it.text.startsWith("2026-09-17") })
+    }
+
+    @Test
+    fun `支付消息列表页——两张订单卡都不丢（真机 14点30 案例回归）`() {
+        val lines = listOf(
+            line("服务消息", y = 200),
+            line("9月统计支出", y = 300),
+            line("淘宝闪购", y = 400),
+            line("9月18日11:40", y = 450),
+            line("￥29.90", y = 500),
+            line("付款方式工商银行储蓄卡(1212）", y = 550),
+            line("支付奖励", y = 600),
+            line("+3积分丨9积分+19.9元兑异环联名帆布袋〉", y = 650),
+            line("淘宝闪购", y = 700),
+            line("9月17日11:12", y = 750),
+            line("￥15.10", y = 800),
+        )
+        val trimmed = OcrPostProcessor.trimNoiseTail(lines)
+        // 运营位行出局，但两张订单卡的金额/日期行保留
+        assertTrue(trimmed.none { "积分" in it.text || "支付奖励" in it.text })
+        assertTrue(trimmed.any { it.text == "￥29.90" })
+        assertTrue(trimmed.any { it.text == "￥15.10" })
+        assertTrue(trimmed.any { it.text.startsWith("9月18日") })
+        assertTrue(trimmed.any { it.text.startsWith("9月17日") })
+    }
+
+    @Test
+    fun `无噪音词与空行列表——原样返回（按阅读顺序）`() {
+        val lines = listOf(
+            line("支付成功", y = 400),
+            line("￥10.00", y = 200),
+        )
+        val trimmed = OcrPostProcessor.trimNoiseTail(lines)
+        assertEquals(listOf("￥10.00", "支付成功"), trimmed.map { it.text })
+        assertEquals(emptyList<OcrLine>(), OcrPostProcessor.trimNoiseTail(emptyList()))
+    }
+
     // ---------- 端到端：OCR 行 → 结构化 prompt 素材 ----------
 
     @Test
