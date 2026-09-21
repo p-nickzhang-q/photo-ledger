@@ -26,9 +26,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -40,13 +42,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import io.github.pnickzhangq.photoledger.data.BackupCodec
@@ -56,6 +66,8 @@ import io.github.pnickzhangq.photoledger.data.ImportQueue
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
 import io.github.pnickzhangq.photoledger.data.LedgerRepository
 import io.github.pnickzhangq.photoledger.data.PhotoStore
+import io.github.pnickzhangq.photoledger.data.filterEntries
+import io.github.pnickzhangq.photoledger.data.searchMonthTotals
 import io.github.pnickzhangq.photoledger.model.ModelManager
 import io.github.pnickzhangq.photoledger.ocr.ExtractResult
 import io.github.pnickzhangq.photoledger.ocr.JniLlmTransport
@@ -187,6 +199,10 @@ class MainActivity : ComponentActivity() {
     private var backupMsg by mutableStateOf<String?>(null)
     private var showRestoreConfirm by mutableStateOf(false)
     private var pendingRestoreUri: Uri? = null
+
+    // ---- 流水搜索（票 21）----
+    private var searchActive by mutableStateOf(false)
+    private var searchQuery by mutableStateOf("")
 
     // ---- 引擎与句柄 ----
     private var ocrEngine: OcrEngine? = null
@@ -323,8 +339,24 @@ class MainActivity : ComponentActivity() {
             ?.let { flow -> flow.collectAsState(initial = emptyList()).value }
             ?: emptyList()
 
-        // 系统返回手势/按键：非根页逐页回退，根页不拦截（系统默认退出）
-        BackHandler(enabled = pageStack.size > 1) { goBack() }
+        // 票 21：搜索态——顶栏切换输入框，客户端过滤（商家/类别/金额/日期）
+        val searchOpen = current is Page.Ledger && searchActive
+        val filteredEntries = remember(entries, searchQuery) { filterEntries(entries, searchQuery) }
+        val searchTotals = remember(filteredEntries) { searchMonthTotals(filteredEntries) }
+        val searching = searchOpen && searchQuery.isNotBlank()
+        val displayTotals = if (searching) searchTotals else monthTotals
+
+        // 系统返回手势/按键：搜索态先收搜索（清词），再逐页回退；根页不拦截（系统默认退出）
+        BackHandler(enabled = pageStack.size > 1 || searchOpen) {
+            if (searchOpen) {
+                searchActive = false
+                searchQuery = ""
+            } else {
+                goBack()
+            }
+        }
+
+        fun closeSearch() { searchActive = false; searchQuery = "" }
 
         // 顶栏三段式统一：非根页 [← | 页面名 | —]，根页 [照片记账 | 队列·汇总·类别·工具]
         val pageTitle = when (current) {
@@ -341,17 +373,52 @@ class MainActivity : ComponentActivity() {
 
         Scaffold(
             topBar = {
+                // 票 21：搜索态把标题位换成输入框（自动聚焦），操作区只留清词按钮
+                val searchFocus = remember { FocusRequester() }
+                LaunchedEffect(searchOpen) { if (searchOpen) searchFocus.requestFocus() }
                 TopAppBar(
-                    title = { Text(pageTitle) },
+                    title = {
+                        if (searchOpen) {
+                            TextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                placeholder = {
+                                    Text("商家 / 类别 / 金额 / 日期", style = MaterialTheme.typography.bodyMedium)
+                                },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                ),
+                                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
+                            )
+                        } else {
+                            Text(pageTitle)
+                        }
+                    },
                     navigationIcon = {
-                        if (pageStack.size > 1) {
-                            IconButton(onClick = ::goBack) {
+                        if (pageStack.size > 1 || searchOpen) {
+                            IconButton(onClick = { if (searchOpen) closeSearch() else goBack() }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                             }
                         }
                     },
                     actions = {
-                        if (current is Page.Ledger) {
+                        if (current is Page.Ledger && searchActive) {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = ::closeSearch) {
+                                    Icon(Icons.Filled.Close, contentDescription = "清除搜索")
+                                }
+                            }
+                        } else if (current is Page.Ledger) {
+                            // 票 21：搜索入口
+                            IconButton(onClick = { searchActive = true }) {
+                                Icon(Icons.Filled.Search, contentDescription = "搜索")
+                            }
                             // 识别队列直达入口（空队列给可行动的空态，不再只能先导图）
                             IconButton(onClick = { navigate(Page.ImportQueue) }) {
                                 Icon(Icons.Filled.Queue, contentDescription = "导入队列")
@@ -399,13 +466,15 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 when (val p = current) {
                     is Page.Ledger -> LedgerListScreen(
-                        entries = entries,
+                        entries = filteredEntries,
                         thumbDir = File(File(filesDir, "ledger"), "thumbs"),
                         photoDir = File(File(filesDir, "ledger"), "photos"),
                         emptyHint = "还没有账目\n\n点右下角 ➕ 从相册导入订单截图",
                         onEntryClick = { navigate(Page.Detail(it.id)) },
                         onImportFromGallery = ::launchGalleryPick,
-                        monthTotals = monthTotals,
+                        monthTotals = displayTotals,
+                        searching = searching,
+                        searchQuery = searchQuery,
                     )
                     is Page.ImportQueue -> ImportQueueScreen(
                         items = queueItems,

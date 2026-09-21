@@ -1,4 +1,5 @@
 // 票 06：流水列表（倒序 + 缩略图，点开详情看原图）。票 09：+按月分组（月内保持倒序）。
+// 票 21：搜索态——过滤后的列表 + 计数行 + 月头合计按过滤结果重算 + 无匹配专用空态。
 // 设计「账本墨绿」：月头带当月合计（绿），月组之间撕票虚线，行间无线靠间距；金额用 AmountText。
 package io.github.pnickzhangq.photoledger.ui
 
@@ -44,51 +45,74 @@ fun LedgerListScreen(
     onEntryClick: (Entry) -> Unit,
     onImportFromGallery: () -> Unit = {},   // 票 07：相册多选入口（空态/工具栏均可触发）
     monthTotals: List<MonthTotal> = emptyList(), // 设计：月头当月合计（数据来自票 09 查询）
+    searching: Boolean = false,   // 票 21：搜索态（query 非空才为 true）
+    searchQuery: String = "",
 ) {
     if (entries.isEmpty()) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(emptyHint, style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = onImportFromGallery, Modifier.padding(top = 16.dp)) {
-                Text("从相册导入截图")
+        if (searching) {
+            // 搜索无匹配：不出导入按钮（与「还没有账目」空态语义不同）
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("没有匹配「$searchQuery」的账目", style = MaterialTheme.typography.bodyMedium)
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(emptyHint, style = MaterialTheme.typography.bodyMedium)
+                Button(onClick = onImportFromGallery, Modifier.padding(top = 16.dp)) {
+                    Text("从相册导入截图")
+                }
             }
         }
         return
     }
-    val totalsByMonth = remember(monthTotals) { monthTotals.associateBy { it.month } }
-    // 月份分组：entries 已按 date_paid DESC 排序，月份变化处插标题（月内倒序天然保持）。
-    // 撕票虚线画在月头顶部（首组除外）——结构即信息：虚线只出现在月份分组处。
-    // 注意不要给虚线单独发 LazyColumn 行：data object 单例的 indexOf 会让 key 重复（真机崩溃前科）。
-    val rows = remember(entries) {
-        buildList {
-            var lastMonth: String? = null
-            entries.forEach { entry ->
-                val month = entry.datePaid.take(7)
-                if (month != lastMonth) {
-                    add(LedgerRow.Header(month, withPerforation = lastMonth != null))
-                    lastMonth = month
+    Column(Modifier.fillMaxSize()) {
+        if (searching) {
+            Text(
+                "共 ${entries.size} 条结果",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+        }
+        val totalsByMonth = remember(monthTotals) { monthTotals.associateBy { it.month } }
+        // 月份分组：entries 已按 date_paid DESC 排序，月份变化处插标题（月内倒序天然保持）。
+        // 撕票虚线画在月头顶部（首组除外）——结构即信息：虚线只出现在月份分组处。
+        // 注意不要给虚线单独发 LazyColumn 行：data object 单例的 indexOf 会让 key 重复（真机崩溃前科）。
+        val rows = remember(entries) {
+            buildList {
+                var lastMonth: String? = null
+                entries.forEach { entry ->
+                    val month = entry.datePaid.take(7)
+                    if (month != lastMonth) {
+                        add(LedgerRow.Header(month, withPerforation = lastMonth != null))
+                        lastMonth = month
+                    }
+                    add(LedgerRow.Item(entry))
                 }
-                add(LedgerRow.Item(entry))
             }
         }
-    }
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        items(
-            rows,
-            key = {
-                when (it) {
-                    is LedgerRow.Header -> "h-${it.month}"
-                    is LedgerRow.Item -> "e-${it.entry.id}"
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(
+                rows,
+                key = {
+                    when (it) {
+                        is LedgerRow.Header -> "h-${it.month}"
+                        is LedgerRow.Item -> "e-${it.entry.id}"
+                    }
+                },
+                contentType = { if (it is LedgerRow.Header) "header" else "entry" },
+            ) { row ->
+                when (row) {
+                    is LedgerRow.Header -> MonthHeader(row.month, totalsByMonth[row.month], row.withPerforation)
+                    is LedgerRow.Item -> EntryRow(row.entry, thumbDir, photoDir, onEntryClick)
                 }
-            },
-            contentType = { if (it is LedgerRow.Header) "header" else "entry" },
-        ) { row ->
-            when (row) {
-                is LedgerRow.Header -> MonthHeader(row.month, totalsByMonth[row.month], row.withPerforation)
-                is LedgerRow.Item -> EntryRow(row.entry, thumbDir, photoDir, onEntryClick)
             }
         }
     }
