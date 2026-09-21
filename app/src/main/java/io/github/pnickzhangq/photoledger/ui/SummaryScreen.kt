@@ -1,4 +1,5 @@
 // 票 09：汇总页——月度汇总（当月合计 + 历史各月）+ 当月类别汇总（合计 + 占比条）。
+// 票 22：+环比（较上月 ±%）+ 当月单笔画像（平均/最高）+ 历史各月迷你条形。
 // 口径 = Entry.amountPaid（实付款），数据全部来自账目库只读查询，本页无写路径。
 package io.github.pnickzhangq.photoledger.ui
 
@@ -20,19 +21,25 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.pnickzhangq.photoledger.data.CategoryTotal
+import io.github.pnickzhangq.photoledger.data.Entry
 import io.github.pnickzhangq.photoledger.data.MonthTotal
+import io.github.pnickzhangq.photoledger.data.monthOverMonth
+import io.github.pnickzhangq.photoledger.data.monthStats
+import kotlin.math.abs
 
 @Composable
 fun SummaryScreen(
     monthTotals: List<MonthTotal>,
     categoryTotals: List<CategoryTotal>,
     currentMonth: String,
+    entries: List<Entry> = emptyList(), // 票 22：单笔画像数据源（当月过滤在页内做）
 ) {
     if (monthTotals.isEmpty()) {
         Column(
@@ -54,6 +61,15 @@ fun SummaryScreen(
     val current = monthTotals.firstOrNull { it.month == currentMonth }
     val history = monthTotals.filter { it.month != currentMonth }
     val currentTotal = current?.total ?: 0.0
+    // 票 22：环比与单笔画像
+    val prevMonth = runCatching {
+        java.time.YearMonth.parse(currentMonth).minusMonths(1).toString()
+    }.getOrNull()
+    val mom = monthOverMonth(currentTotal, monthTotals.firstOrNull { it.month == prevMonth }?.total)
+    val stats = remember(entries, currentMonth) {
+        monthStats(entries.filter { it.datePaid.take(7) == currentMonth })
+    }
+    val maxMonthTotal = monthTotals.maxOfOrNull { it.total } ?: 0.0
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -73,6 +89,34 @@ fun SummaryScreen(
                 )
                 Text(
                     "${formatMonth(currentMonth)} · 共 ${current?.count ?: 0} 笔",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        // 票 22：环比——涨红降绿；上月无数据不显示
+        mom.pctChange?.let { pct ->
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (pct >= 0) "较上月 ↑" else "较上月 ↓",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${"%.1f".format(abs(pct))}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        color = if (pct >= 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+        // 票 22：当月单笔画像——平均单笔 + 最高单笔（标注 商家→类别 回退）
+        stats?.let { s ->
+            item {
+                Text(
+                    "平均 ¥${formatAmountTotal(s.avgAmount)}/笔 · 最高 ¥${formatAmountTotal(s.maxAmount)}（${s.maxLabel}）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -140,13 +184,33 @@ fun SummaryScreen(
             }
         } else {
             items(history, key = { it.month }) { m ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(formatMonth(m.month), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                    Text(
-                        "¥${formatAmountTotal(m.total)} · ${m.count} 笔",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(formatMonth(m.month), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                        Text(
+                            "¥${formatAmountTotal(m.total)} · ${m.count} 笔",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // 票 22：迷你条形——该月占全期最大月的比例，分布一眼可见
+                    if (maxMonthTotal > 0) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((m.total / maxMonthTotal).toFloat().coerceIn(0f, 1f))
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(MaterialTheme.colorScheme.primary),
+                            )
+                        }
+                    }
                 }
             }
         }

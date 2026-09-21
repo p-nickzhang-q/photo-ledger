@@ -511,6 +511,7 @@ class MainActivity : ComponentActivity() {
                         monthTotals = monthTotals,
                         categoryTotals = currentCategoryTotals,
                         currentMonth = currentMonth,
+                        entries = entries,
                     )
                     is Page.ModelManage -> ModelManageScreen(
                         modelFile = litertlmPath?.let(::File)?.takeIf(File::exists),
