@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.PhotoLedger" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- windowBackground = Compose 首帧前的窗口底色：白闪 → 账本纸色（票 24） -->
+    <style name="Theme.PhotoLedger" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
 </resources>

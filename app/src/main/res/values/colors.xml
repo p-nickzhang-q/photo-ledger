@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 启动窗背景（票 24）：Compose 首帧前的窗口默认底色，与「账本墨绿」纸色一致，
+         消除冷启动白闪；暗色由 values-night 同名色承接 -->
+    <color name="window_background">#F7F6F2</color>
+</resources>
