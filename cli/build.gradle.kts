@@ -14,6 +14,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     // 票 13：LiteRT-LM 桌面（JVM）实现，闸门用它与端侧同后端对比质量
     implementation("com.google.ai.edge.litertlm:litertlm-jvm:0.17.0")
+    // --ocrdebug：端侧同款 OcrEngine 在桌面复现（与 app 的 onnxruntime-android 同 Java API）
+    implementation("com.microsoft.onnxruntime:onnxruntime:1.20.0")
     testImplementation(libs.junit.jupiter)
 }
 

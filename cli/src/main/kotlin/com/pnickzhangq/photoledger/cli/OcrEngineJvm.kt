@@ -1,7 +1,7 @@
 // 票 04：端侧 OCR——PP-OCRv4 mobile ONNX 三件套（det/cls/rec），与桌面 RapidOCR 同款模型文件，
 // ADR-0004 同构约束。前后处理参照 RapidOCR 的 det_db_postprocess / rec CTC decode，
 // 截图场景文本全水平：det 后处理用连通域 + AABB，不做旋转矩形/透视变换。
-package io.github.pnickzhangq.photoledger.ocr
+package com.pnickzhangq.photoledger.cli
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -13,13 +13,13 @@ import kotlin.math.max
 import kotlin.math.min
 
 /** 一行 OCR 结果：文本 + 置信度 + 四点多边形（与 OCR 子进程协议 v1 的 lines 语义一致）。 */
-data class OcrLine(
+data class OcrLineJvm(
     val text: String,
     val score: Float,
     val box: List<List<Float>>,
 )
 
-class OcrEngine(
+class OcrEngineJvm(
     detModel: File,
     recModel: File,
     clsModel: File?,
@@ -43,14 +43,18 @@ class OcrEngine(
     }
 
     /** 对一张图（ARGB 像素）做检测 + 识别，返回文本行。cls 三件套可选（截图全正向，冒烟跳过）。 */
-    fun run(pixels: IntArray, width: Int, height: Int): List<OcrLine> {
+    fun run(pixels: IntArray, width: Int, height: Int): List<OcrLineJvm> =
+        runVerbose(pixels, width, height).map { it.first }
+
+    /** 诊断版：额外返回每行的裁剪尺寸（对照 RapidOCR 排查 rec 输入差异）。 */
+    fun runVerbose(pixels: IntArray, width: Int, height: Int): List<Triple<OcrLineJvm, Int, Int>> {
         val boxes = detectBoxes(pixels, width, height)
-        val lines = mutableListOf<OcrLine>()
+        val lines = mutableListOf<Triple<OcrLineJvm, Int, Int>>()
         for (box in boxes) {
             val crop = cropBox(pixels, width, height, box)
             val (text, score) = recognize(crop.first, crop.second.first, crop.second.second)
             if (score > 0.0f && text.isNotEmpty()) {
-                lines.add(OcrLine(text, score, box))
+                lines.add(Triple(OcrLineJvm(text, score, box), crop.second.first, crop.second.second))
             }
         }
         return lines
@@ -74,8 +78,7 @@ class OcrEngine(
         val input = FloatBuffer.allocate(3 * rh32 * rw32)
         for (y in 0 until rh32) {
             for (x in 0 until rw32) {
-                // 内容按未 pad 的 (rw, rh) 均匀缩放采样；pad 区补黑（归一化 -1，对齐 RapidOCR 零填充）。
-                // 票 26：此前按 rw32/rh32 全幅采样 = 各向异性拉伸，y 轴多压 ~4%
+                // 内容按未 pad 的 (rw, rh) 均匀缩放采样；pad 区补黑（归一化 -1，对齐 RapidOCR 零填充）
                 val inContent = x < rw && y < rh
                 val sx = min(x * width / rw, width - 1)
                 val sy = min(y * height / rh, height - 1)
@@ -98,7 +101,9 @@ class OcrEngine(
         }
     }
 
-    /** DB postprocess：0.3 阈值 → 4 连通域 → 面积过滤 → AABB 还原原图坐标 + 扩边。 */
+    /** DB postprocess：0.3 阈值 → 4 连通域 → 面积过滤 → AABB 还原原图坐标 + 扩边。
+     *  坐标还原按轴分离（grid→orig 用未 pad 的 rw/rh）——单一 max scale 会把 y 轴
+     *  累计拉伸 ~4%（pad 差值），小字整行裁剪下移、rec 劣化（order_09 33.03→55:03 根因）。 */
     private fun dbPostprocess(
         probMap: Array<FloatArray>,
         pw: Int,
@@ -143,8 +148,7 @@ class OcrEngine(
             // 噪声过滤（对应 RapidOCR min_size 3）
             if (count < 3 || (maxX - minX + 1) < 3 || (maxY - minY + 1) < 3) continue
 
-            // 票 26：坐标还原按轴分离（grid→orig 用未 pad 的 rw/rh）。单一 max scale 会把
-            // y 轴累计拉伸 ~4%（pad 差值），小字行裁剪整体下移、rec 劣化（33.03→55:03 根因）
+            // 坐标还原按轴分离：内容区 grid(0..pw, 0..ph) 映射回原图
             val scaleX = origW / pw.toFloat()
             val scaleY = origH / ph.toFloat()
             // unclip 与桌面 RapidOCR 同款：offset = unclip_ratio * 面积/周长（1.6）。

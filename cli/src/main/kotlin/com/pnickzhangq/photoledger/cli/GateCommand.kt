@@ -4,6 +4,8 @@ import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 import com.pnickzhangq.photoledger.engine.ExtractionEngine
 import com.pnickzhangq.photoledger.engine.GateScoring
 import com.pnickzhangq.photoledger.engine.OcrClient
+import com.pnickzhangq.photoledger.engine.OcrImageResult
+import com.pnickzhangq.photoledger.engine.OcrResultLine
 import com.pnickzhangq.photoledger.engine.OcrLine
 import com.pnickzhangq.photoledger.engine.llamacpp.LlamaServerProcess
 import com.pnickzhangq.photoledger.engine.llamacpp.LlamaServerTransport
@@ -31,6 +33,7 @@ fun runGate(
     outPath: String?,
     transportKind: String = "llamacpp",   // 票 13：llamacpp | litert
     litertBackend: String = "cpu",        // 票 14：litert 档后端 cpu | gpu（桌面 WSL 无 OpenCL 时 gpu 会失败，真机闸门走 App）
+    ocrJvm: Boolean = false,              // 票 26：用 App 同款 Kotlin OcrEngine 替换 RapidOCR（端侧 OCR 回归验证）
 ) {
     val root = File(System.getProperty("user.dir")).let { dir ->
         generateSequence(dir) { it.parentFile }.firstOrNull { File(it, "settings.gradle.kts").exists() } ?: dir
@@ -71,7 +74,7 @@ fun runGate(
                 modelPath = (File(root, model).takeIf { File(root, model).exists() } ?: File(model)).absolutePath,
                 backend = backend,
             ).use { transport ->
-                runGateScoring(csv, images, annotations, outPath, transport, ocrWorker)
+                runGateScoring(csv, images, annotations, outPath, transport, ocrWorker, ocrJvm)
             }
             return@runBlocking
         }
@@ -189,6 +192,7 @@ private suspend fun runGateScoring(
     outPath: String?,
     transport: com.pnickzhangq.photoledger.engine.LlmTransport,
     ocrWorker: String,
+    ocrJvm: Boolean = false,
 ) {
     val root = File(System.getProperty("user.dir")).let { dir ->
         generateSequence(dir) { it.parentFile }.firstOrNull { File(it, "settings.gradle.kts").exists() } ?: dir
@@ -199,9 +203,31 @@ private suspend fun runGateScoring(
         pythonBin = OCR_PYTHON,
     )
 
-    // ---- OCR 批量 ----
+    // ---- OCR 批量（--ocr-jvm 用 App 同款 OcrEngine，否则 RapidOCR 子进程）----
     val t0 = System.currentTimeMillis()
-    val ocrResults = ocr.recognize(images)
+    val ocrResults: List<OcrImageResult> = if (ocrJvm) {
+        OcrEngineJvm(detModel = File(root, ".scratch/device-push/ch_PP-OCRv4_det_infer.onnx"),
+            recModel = File(root, ".scratch/device-push/ch_PP-OCRv4_rec_infer.onnx"),
+            clsModel = null).use { engine ->
+            images.map { img ->
+                val buffered = javax.imageio.ImageIO.read(img)
+                if (buffered == null) {
+                    OcrImageResult(img.absolutePath, false, error = "无法解码")
+                } else {
+                    val rgb = java.awt.image.BufferedImage(buffered.width, buffered.height, java.awt.image.BufferedImage.TYPE_INT_RGB)
+                    rgb.graphics.drawImage(buffered, 0, 0, null)
+                    val px = IntArray(rgb.width * rgb.height)
+                    rgb.getRGB(0, 0, rgb.width, rgb.height, px, 0, rgb.width)
+                    val lines = engine.run(px, rgb.width, rgb.height).map {
+                        OcrResultLine(it.text, it.score, it.box)
+                    }
+                    OcrImageResult(img.absolutePath, true, lines)
+                }
+            }
+        }
+    } else {
+        ocr.recognize(images)
+    }
     val ocrByImage = ocrResults.associateBy { File(it.image).name }
     println("OCR 完成（${(System.currentTimeMillis() - t0) / 1000}s）")
 

@@ -27,6 +27,64 @@ fun main(args: Array<String>) = runBlocking {
         dumpGrammar(args.getOrElse(1) { "build/extract-grammar.gbnf" })
         return@runBlocking
     }
+    if (args.isNotEmpty() && args[0] == "--ocrdebug") {
+        // 诊断工具（真机 OCR 误读复现，票 26 诊断）：--ocrdebug <png> [--scale 1.0]
+        // 用 App 同款 OcrEngine（Kotlin 移植）在桌面跑同一张图——桌面 RapidOCR 读对、
+        // 真机读错时，用它隔离「移植实现差异」还是「真机环境差异」；--scale 测试放大预处理。
+        var det = ".scratch/device-push/ch_PP-OCRv4_det_infer.onnx"
+        var rec = ".scratch/device-push/ch_PP-OCRv4_rec_infer.onnx"
+        var scale = 1.0f
+        val images = mutableListOf<String>()
+        var i = 1
+        while (i < args.size) {
+            when (args[i]) {
+                "--det" -> det = args[++i]
+                "--rec" -> rec = args[++i]
+                "--scale" -> scale = args[++i].toFloat()
+                else -> images += args[i]
+            }
+            i++
+        }
+        require(images.isNotEmpty()) { "--ocrdebug 需要 <png> 路径（可多张）" }
+        val projectRoot = File(System.getProperty("user.dir")).let { dir ->
+            generateSequence(dir) { it.parentFile }.firstOrNull { File(it, "settings.gradle.kts").exists() } ?: dir
+        }
+        fun resolve(path: String): File = if (File(path).isAbsolute) File(path) else File(projectRoot, path)
+
+        OcrEngineJvm(
+            detModel = resolve(det),
+            recModel = resolve(rec),
+            clsModel = null,
+        ).use { engine ->
+            for (imgPath in images) {
+                val img = javax.imageio.ImageIO.read(resolve(imgPath))
+                    ?: run { println("[MISS] 无法解码：$imgPath"); continue }
+                val rgb = java.awt.image.BufferedImage(img.width, img.height, java.awt.image.BufferedImage.TYPE_INT_RGB)
+                rgb.graphics.drawImage(img, 0, 0, null)
+                var pixels = IntArray(rgb.width * rgb.height)
+                rgb.getRGB(0, 0, rgb.width, rgb.height, pixels, 0, rgb.width)
+                var w = rgb.width
+                var h = rgb.height
+                if (scale != 1.0f) {
+                    val dw = (w * scale).toInt()
+                    val dh = (h * scale).toInt()
+                    pixels = bilinearScale(pixels, w, h, dw, dh)
+                    w = dw; h = dh
+                    println("放大 ${scale}x → ${w}x${h}")
+                }
+                println("== ${resolve(imgPath).name}")
+                val lines = engine.runVerbose(pixels, w, h)
+                println("lines=${lines.size}")
+                lines.forEachIndexed { idx, (line, cropW, cropH) ->
+                    println(
+                        "E2E_OCR_LINE[$idx] [${"%.2f".format(line.score)}] ${line.text} " +
+                            "box=${line.box.flatten().joinToString(",") { "%.0f".format(it) }} crop=${cropW}x$cropH",
+                    )
+                }
+            }
+        }
+        return@runBlocking
+    }
     if (args.isNotEmpty() && args[0] == "--replay") {
         // 诊断工具（金额识别差分回放）：--replay <lines.txt> --model <litertlm> [--min-score 0.7] [--show-prompt]
         // lines.txt 每行 `score\ttext`（取自真机 E2E_OCR_LINE 日志）。跳过 OCR，直接把行喂给真模型。
@@ -76,6 +134,7 @@ fun main(args: Array<String>) = runBlocking {
         var port = 8905
         var transportKind = "llamacpp"
         var litertBackend = "cpu" // 票 14：cpu | gpu
+        var ocrJvm = false        // 票 26：App 同款 Kotlin OcrEngine 替换 RapidOCR
         var i = 1
         while (i < args.size) {
             when (args[i]) {
@@ -87,6 +146,7 @@ fun main(args: Array<String>) = runBlocking {
                 "--port" -> port = args[++i].toInt()
                 "--transport" -> transportKind = args[++i]
                 "--litert-backend" -> litertBackend = args[++i]
+                "--ocr-jvm" -> ocrJvm = true
                 else -> if (csv.isEmpty()) csv = args[i]
             }
             i++
@@ -102,6 +162,7 @@ fun main(args: Array<String>) = runBlocking {
             outPath = out,
             transportKind = transportKind,
             litertBackend = litertBackend,
+            ocrJvm = ocrJvm,
         )
         return@runBlocking
     }
@@ -228,6 +289,35 @@ fun main(args: Array<String>) = runBlocking {
 }
 
 private fun List<List<Float>>.flatten(): List<Float> = flatMap { it }
+
+/** 双线性缩放（与 OcrEngine.resizeTo 同款，cv2 像素中心对齐）——放大预处理实验用。 */
+internal fun bilinearScale(pixels: IntArray, srcW: Int, srcH: Int, dstW: Int, dstH: Int): IntArray {
+    val out = IntArray(dstW * dstH)
+    val xScale = srcW.toFloat() / dstW
+    val yScale = srcH.toFloat() / dstH
+    for (y in 0 until dstH) {
+        val fy = (y + 0.5f) * yScale - 0.5f
+        val sy0 = fy.toInt().coerceIn(0, srcH - 1)
+        val sy1 = minOf(sy0 + 1, srcH - 1)
+        val wy = (fy - sy0).coerceIn(0f, 1f)
+        for (x in 0 until dstW) {
+            val fx = (x + 0.5f) * xScale - 0.5f
+            val sx0 = fx.toInt().coerceIn(0, srcW - 1)
+            val sx1 = minOf(sx0 + 1, srcW - 1)
+            val wx = (fx - sx0).coerceIn(0f, 1f)
+            val p00 = pixels[sy0 * srcW + sx0]
+            val p10 = pixels[sy0 * srcW + sx1]
+            val p01 = pixels[sy1 * srcW + sx0]
+            val p11 = pixels[sy1 * srcW + sx1]
+            fun lerp(a: Int, b: Int, t: Float) = a + ((b - a) * t).toInt()
+            val r = lerp(lerp(p00 shr 16 and 0xFF, p10 shr 16 and 0xFF, wx), lerp(p01 shr 16 and 0xFF, p11 shr 16 and 0xFF, wx), wy)
+            val g = lerp(lerp(p00 shr 8 and 0xFF, p10 shr 8 and 0xFF, wx), lerp(p01 shr 8 and 0xFF, p11 shr 8 and 0xFF, wx), wy)
+            val b = lerp(lerp(p00 and 0xFF, p10 and 0xFF, wx), lerp(p01 and 0xFF, p11 and 0xFF, wx), wy)
+            out[y * dstW + x] = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b
+        }
+    }
+    return out
+}
 
 private fun guessMime(file: File): String = when (file.name.substringAfterLast('.').lowercase()) {
     "png" -> "image/png"
