@@ -79,8 +79,9 @@ class LitertLlmTransport(
                 (c as? com.google.ai.edge.litertlm.Content.Text)?.text ?: ""
             }
             Log.i(TAG, "SMOKE_LITERT_OK ms=${System.currentTimeMillis() - t0} len=${out.length} out=$out")
-            // 票 23 诊断：TTFT/prefill/decode 吞吐（runtime 自报），拆解 sendMessage 内部耗时
-            Log.i(TAG, "LITERT_BENCH ${conversation.getBenchmarkInfo()}")
+            // 票 23 诊断：TTFT/prefill/decode 吞吐（runtime 自报）——仅诊断用，
+            // 未开 Benchmark 时 getBenchmarkInfo 会抛异常，绝不能影响提取结果（真机 11:23 事故）
+            runCatching { Log.i(TAG, "LITERT_BENCH ${conversation.getBenchmarkInfo()}") }
             // 票 13 实测：LLGuidance 约束下 JSON Schema enum 字段输出双重编码
             // （"currency": "\"CNY\""），字符串字段值带一层字面引号。出口清洗：
             // 把 "…"（字面引号包裹的值）还原为裸值。自由字符串字段（merchant 等）
