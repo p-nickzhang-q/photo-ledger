@@ -149,10 +149,11 @@ class MainActivity : ComponentActivity() {
     // 票 17：transport/OCR 引擎的创建互斥——启动预加载与队列首张提取并发时不得重复加载
     private val engineMutex = kotlinx.coroutines.sync.Mutex()
 
-    /** 票 17：模型就绪时启动即后台预加载（transport ~15s + OCR 引擎），首批导入零冷加载等待。 */
+    /** 票 17：模型就绪时启动即后台预加载（transport ~15s + OCR 引擎），首批导入零冷加载等待。
+     *  必须跑在 Default——Main 上加载 ONNX/模型会卡住 Compose 首帧，冷启动变白屏（票 24 复盘）。 */
     private fun preloadEngines() {
         if (litertlmPath == null || detPath == null || recPath == null) return
-        lifecycleScope.launch {
+        lifecycleScope.launch(Dispatchers.Default) {
             val t0 = System.currentTimeMillis()
             runCatching {
                 ensureOcrEngine()
