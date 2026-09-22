@@ -56,4 +56,22 @@
 
 ## Resolved
 
-（待收口）
+- 结论（2026-09-22）：修复落地并验证。OcrEngine.detectBoxes 两处 bug——
+  ① det 输入按 pad 后 (rw32,rh32) 全幅各向异性拉伸采样（内容应只占 (rw,rh)）；
+  ② 概率图坐标还原用单一 max scale，y 轴被 pad 差值累计拉伸（误差随 y 递增，
+  行 0 差 3px、行 12 差 23px），裁剪框下移裁掉字的上半截 → rec 全线劣化。
+  修复为：内容按未 pad 尺寸均匀采样 + pad 区补黑（对齐 RapidOCR 零填充）、
+  坐标按轴分离还原（scaleX=origW/rw、scaleY=origH/rh）。
+- 桌面复现证据（--ocrdebug）：order_09 修复前 `[0.84] 实付款￥55:03`、
+  `[0.79] 00:23`；修复后 `[0.97] 实付款￥33.03`、`[1.00] 08.23`，
+  框坐标与 RapidOCR 对齐。2x 放大预处理试验无效（仅 55:03→35:03），未采用。
+- 闸门（--ocr-jvm，App 同款 OCR + litert cpu，gate-report-ocrjvm.md）：
+  实付款 96.7%（29/30）、日期 100%、商家/类别 100% PASS；
+  order_09 33.03 ✓；唯一 ✗ 为已知 order_12（14.5→14.0）。零回归。
+- 真机复测（vivo V2183A，versionCode 24）：用户重导 CoCo 卡，金额 33.03
+  显示正确。
+- 附带：cli 新增 OcrEngineJvm.kt（app/ocr/OcrEngine.kt 同步副本，**改一处必须
+  同步另一处**）、gate --ocr-jvm 开关。桌面 RapidOCR 闸门路径未动。
+- 遗留观察：修复后行级 diff 显示 det 拆分粒度与 RapidOCR 仍有差异（合并长行
+  vs RapidOCR 拆两行），但 rec 均读对，不影响字段正确率；部分低分噪声行
+  （RR/卧 等）由既有 min-score 过滤兜底。
