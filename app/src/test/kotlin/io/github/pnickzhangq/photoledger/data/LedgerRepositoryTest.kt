@@ -153,42 +153,53 @@ class LedgerRepositoryTest {
         assertEquals(listOf("B", "A"), list.map { it.merchant })
     }
 
-    // ---- 商户记忆（票 27）----
+    // ---- 商户记忆（票 27；注意：SEED_CALLBACK 会给内存库种品牌字典，断言按目标商户过滤，不断言全表空）----
 
     @Test
     fun `票27——确认时商户非空则学习进记忆`() = runTest {
         repo.confirm(sampleDraft, photoBytes = null)
-        val mem = repo.merchantMemories()
+        val mem = repo.merchantMemories().filter { it.alias == "如意馄饨·干拌面光福店" }
         assertEquals(1, mem.size)
         assertEquals("如意馄饨·干拌面光福店", mem.single().canonical)
-        assertEquals("如意馄饨·干拌面光福店", mem.single().alias)
     }
 
     @Test
     fun `票27——空商户不学习，重复确认计数累加`() = runTest {
         repo.confirm(sampleDraft.copy(merchant = ""), photoBytes = null)
-        assertTrue(repo.merchantMemories().isEmpty())
+        assertTrue(db.merchantMemoryDao().byAlias("如意馄饨·干拌面光福店") == null)
         repo.confirm(sampleDraft, photoBytes = null)
         repo.confirm(sampleDraft, photoBytes = null)
-        val row = db.merchantMemoryDao().all().single()
-        assertEquals(2, row.hitCount)
+        assertEquals(2, db.merchantMemoryDao().byAlias("如意馄饨·干拌面光福店")?.hitCount)
     }
 
     @Test
     fun `票27——编辑补填商户时学习`() = runTest {
         repo.confirm(sampleDraft.copy(merchant = ""), photoBytes = null)
-        assertTrue(repo.merchantMemories().isEmpty())
+        assertTrue(db.merchantMemoryDao().byAlias("华莱士") == null)
         val entry = repo.entries.first().single()
         repo.edit(entry) { copy(merchant = "华莱士") }
-        assertEquals("华莱士", repo.merchantMemories().single().canonical)
+        assertEquals("华莱士", repo.merchantMemories().single { it.alias == "华莱士" }.canonical)
     }
 
     @Test
     fun `票27——商户名只做空白归一，重名不产生第二行`() = runTest {
-        repo.confirm(sampleDraft.copy(merchant = " 沙县小吃 "), photoBytes = null)
-        repo.confirm(sampleDraft.copy(merchant = "沙县小吃"), photoBytes = null)
-        val rows = db.merchantMemoryDao().all()
-        assertEquals(1, rows.size)
-        assertEquals("沙县小吃", rows.single().alias)
+        // 用非种子名（避免与 SEED_CALLBACK 种的品牌字典同键）
+        repo.confirm(sampleDraft.copy(merchant = " 某某馄饨 "), photoBytes = null)
+        repo.confirm(sampleDraft.copy(merchant = "某某馄饨"), photoBytes = null)
+        val row = db.merchantMemoryDao().byAlias("某某馄饨")
+        assertEquals(2, row?.hitCount)
+    }
+
+    @Test
+    fun `票27——种子商户开箱即用且可命中`() = runTest {
+        // SEED_CALLBACK 种的品牌（如蜜雪冰城）应能被提取器直接用于回填
+        val mem = repo.merchantMemories()
+        assertTrue(mem.any { it.alias == "蜜雪冰城" && it.canonical == "蜜雪冰城" })
+        assertEquals(
+            "蜜雪冰城",
+            com.pnickzhangq.photoledger.engine.MerchantMatcher.match(
+                listOf("蜜雷冰城（光福店）订单"), mem,
+            ),
+        )
     }
 }

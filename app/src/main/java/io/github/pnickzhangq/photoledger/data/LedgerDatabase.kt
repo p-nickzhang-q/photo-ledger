@@ -11,6 +11,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
+import com.pnickzhangq.photoledger.engine.DEFAULT_MERCHANT_MEMORY
 
 @Database(
     entities = [Entry::class, CategoryEntity::class, MerchantMemoryEntity::class],
@@ -59,19 +60,36 @@ abstract class LedgerDatabase : RoomDatabase() {
             }
         }
 
-        /** 空表种子八类（onOpen 每次开库检查，幂等——只在 count==0 时插）。 */
+        /** 空表种子八类与商户记忆（onOpen 每次开库检查，幂等——只在 count==0 时插）。 */
         private val SEED_CALLBACK = object : RoomDatabase.Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
                 val isEmpty = db.query("SELECT COUNT(*) FROM categories").use { c ->
                     c.moveToFirst()
                     c.getInt(0) == 0
                 }
-                if (!isEmpty) return
-                DEFAULT_CATEGORIES.forEachIndexed { i, name ->
-                    val stmt = db.compileStatement("INSERT INTO categories (name, sort_order) VALUES (?, ?)")
-                    stmt.bindString(1, name)
-                    stmt.bindLong(2, i.toLong())
-                    stmt.executeInsert()
+                if (isEmpty) {
+                    DEFAULT_CATEGORIES.forEachIndexed { i, name ->
+                        val stmt = db.compileStatement("INSERT INTO categories (name, sort_order) VALUES (?, ?)")
+                        stmt.bindString(1, name)
+                        stmt.bindLong(2, i.toLong())
+                        stmt.executeInsert()
+                    }
+                }
+                // 票 27：商户记忆空表时种子品牌字典（用户确认过的商户后续 upsert 覆盖计数）
+                val memEmpty = db.query("SELECT COUNT(*) FROM merchant_memory").use { c ->
+                    c.moveToFirst()
+                    c.getInt(0) == 0
+                }
+                if (memEmpty) {
+                    DEFAULT_MERCHANT_MEMORY.forEach { (alias, category) ->
+                        val stmt = db.compileStatement(
+                            "INSERT INTO merchant_memory (alias, canonical, category, hitCount, lastUsedAt) VALUES (?, ?, ?, 0, 0)",
+                        )
+                        stmt.bindString(1, alias)
+                        stmt.bindString(2, alias)
+                        stmt.bindString(3, category)
+                        stmt.executeInsert()
+                    }
                 }
             }
         }

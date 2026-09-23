@@ -23,6 +23,21 @@
 - 验证：engine 6 匹配单测 + app 4 学习单测全过；编译通过。
 - 遗留：真机验证（确认商户 → 同商户第二张截图自动回填）待用户实测。
 
+## 种子商户字典（2026-09-23 追加）
+
+- engine `DefaultMerchants.kt`：从 SpendTrace 商户字典（.scratch/refs/SpendTrace
+  的 CategoryDictionary.kt，~250 关键词）**只挑品牌名**（~110 条）做种子——
+  通类词（咖啡/烧烤/外卖/打车/中介等）不能当商户名回填，全部剔除；平台名保留
+  （在线支付 merchant=平台名合理）。类别映射：住房→居住、休闲/学习→娱乐，
+  全部落在内置八类内。
+- 种子路径：LedgerDatabase SEED_CALLBACK 空表时插入（与八类种子同模式，幂等）；
+  用户确认过的商户后续 upsert 覆盖 hitCount，两种来源共表无冲突。
+- 测试约束：种子类别 ⊆ DEFAULT_CATEGORIES、别名 ≥2 字无空白（engine
+  DefaultMerchantsTest）；app 侧学习测试改为按目标商户过滤断言（内存库现在
+  带种子，不再断言全表空），新增「种子开箱可命中」测试（蜜雷冰城→蜜雪冰城）。
+- versionCode 27 装机。用户已有 v3 库：merchant_memory 表此前为空，下次开库
+  即种子；不影响既有 entries/categories。
+
 ## 背景 / 动机
 
 2026-09 已把 merchant 移出模型输出（0.6B 抄写中文店名太弱：prompt 示例泄漏/
