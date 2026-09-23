@@ -2,7 +2,14 @@
 
 - Owner: agent（QoderCN）
 - Created: 2026-09-23
-- Status: In Progress（代码完成已装机 versionCode 26，待真机验证后 Resolved）
+- Status: Resolved
+
+## Resolved
+
+- 结论（2026-09-23）：全部落地并真机验证通过（vivo V2183A，versionCode 27，
+  用户实测「测了一下没问题」）。merchant 依旧不进模型输出；用户确认过的商户
+  与内置品牌种子经 MerchantMatcher 本地匹配自动回填 Draft.merchant，复核页
+  可见可改，未命中维持留空（宁缺勿错）。
 
 ## 实现记录（2026-09-23）
 
