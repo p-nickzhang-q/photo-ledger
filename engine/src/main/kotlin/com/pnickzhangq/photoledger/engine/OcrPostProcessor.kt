@@ -124,6 +124,12 @@ object OcrPostProcessor {
     private val ACCT_TAIL = Regex("""[（(][0-9０-９]{2,6}[)）]""")
 
     /**
+     * 「数字/数字」进度形态（真机 2026-09-23：「100/100元」券进度条被 0.6B 抄走当
+     * 实付款 100）。真付款金额不含这种形态，整行踢出候选。
+     */
+    private val PROGRESS_NUM = Regex("""[0-9０-９]+\s*/\s*[0-9０-９]+""")
+
+    /**
      * 独立「整数.两位小数」行：账单详情页金额的通用形态（微信「15.40」负号被 OCR
      * 丢失、支付宝「-29.90」、转账「-370.00」都命中）。区块内首个该形态行视为强信号——
      * 两个 App 都把交易金额放在卡片头部、标签行之前。
@@ -192,7 +198,7 @@ object OcrPostProcessor {
      */
     fun splitOrderBlocks(lines: List<OcrLine>): List<List<OcrLine>> {
         val ordered = lines.sortedWith(compareBy({ it.top }, { it.left }))
-        val paidIdx = ordered.indices.filter { containsPaidKeyword(ordered[it].text) }
+        val paidIdx = ordered.indices.filter { isPaidAnchor(ordered[it].text) }
         if (paidIdx.isEmpty()) return listOf(ordered)
 
         val blocks = mutableListOf<List<OcrLine>>()
@@ -211,8 +217,14 @@ object OcrPostProcessor {
         return blocks
     }
 
-    private fun containsPaidKeyword(text: String): Boolean =
-        listOf("实付款", "实付", "付款金额", "支付金额").any { it in text.replace(" ", "") }
+    /**
+     * 实付锚定行：实付类关键词后必须紧跟金额（冒号/货币符号可隔）——「实付款￥33.03」
+     * 「总优惠￥2.8实付￥28」是订单边界，「实付满15即可计入任务进度」这类促销文案不是
+     * （真机 2026-09-23：饿了么订单详情页促销行被当边界，单订单拆成两单，LLM 白跑一遍）。
+     */
+    private val PAID_ANCHOR = Regex("(?:实付款?|付款金额|支付金额)[：:]?\\s*[￥￥]?\\s*\\d")
+
+    private fun isPaidAnchor(text: String): Boolean = PAID_ANCHOR.containsMatchIn(text.replace(" ", ""))
 
     // ---------- 噪音行丢弃（票 23 提速） ----------
 
@@ -231,6 +243,9 @@ object OcrPostProcessor {
         "请选择", "为您推荐", "再转一笔", "备注",
         // 广告/促销（收银台等）
         "广告", "代金券", "活动时间", "名额有限", "先到先得", "具体规则", "小程序", "登录",
+        // 促销挑战/活动（真机 2026-09-23 饿了么订单详情页：「实付满15即可计入任务进度」
+        // 这类行既含「实付」又含数字，进候选会污染金额，进边界会假拆单）
+        "多单挑战", "完成挑战", "任务进度", "去领奖", "急送券",
         // 列表/杂项
         "标签", "查看详情", "查看更多", "摇一摇", "外卖+", "下馆子",
     )
@@ -333,6 +348,7 @@ object OcrPostProcessor {
                     val isJunkAmount = text.contains('@') ||
                         TIME_ONLY.containsMatchIn(text) ||
                         TIME_PREFIX.containsMatchIn(text) ||
+                        PROGRESS_NUM.containsMatchIn(text) ||
                         ACCT_TAIL.containsMatchIn(text)
                     if (!isJunkAmount) normalizeAmount(line.text, allowDecimalRestore = false)?.let {
                         amounts.add(it)

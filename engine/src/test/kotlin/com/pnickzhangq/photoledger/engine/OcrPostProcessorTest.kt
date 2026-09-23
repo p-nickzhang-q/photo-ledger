@@ -327,6 +327,25 @@ class OcrPostProcessorTest {
     }
 
     @Test
+    fun `进度条形态不进金额候选——真机 100被抄走回归`() {
+        // 真机 2026-09-23 饿了么订单详情页：「100/100元」券进度被 0.6B 抄走当实付款
+        val lines = listOf(
+            line("闪购沙县小吃(光福店）", 0),
+            line("共2件", 100),
+            line("价格明细", 200),
+            line("总优惠￥2.8实付￥28", 300),
+            line("100/100元", 400),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertTrue(100.0 !in m.amounts, "进度条数字不应进候选：${m.amounts}")
+        assertTrue(28.0 in m.amounts)
+        // 28 成为唯一货币金额 → 锚定兜底可生效（100 已无候选背书）
+        assertEquals(listOf(28.0), m.currencyAmounts)
+        val draft = Draft(amountPaid = 100.0, datePaid = "", category = "餐饮")
+        assertEquals(28.0, OcrPostProcessor.anchorAmount(draft, m).amountPaid, 0.001)
+    }
+
+    @Test
     fun `无锚定标签时回退全部日期候选`() {
         val lines = listOf(
             line("2026-09-01", 0),
@@ -381,6 +400,37 @@ class OcrPostProcessorTest {
         val blocks = OcrPostProcessor.splitOrderBlocks(lines)
         assertEquals(1, blocks.size)
         assertEquals(2, blocks[0].size)
+    }
+
+    @Test
+    fun `促销实付满X行不切成两单——真机饿了么订单详情页回归`() {
+        // 真机 2026-09-23：促销行「实付满15即可计入任务进度」含「实付」被当订单边界，
+        // 单订单拆成两单，LLM 白跑一遍 16s
+        val lines = listOf(
+            line("多单挑战剩2天00时02分", y = 0),
+            line("完成挑战，恭喜获得3张1对1急送券", y = 100),
+            line("实付满15即可计入任务进度", y = 200),
+            line("闪购沙县小吃(光福店）", y = 300),
+            line("总优惠￥2.8实付￥28", y = 400),
+            line("订单号", y = 500),
+        )
+        val blocks = OcrPostProcessor.splitOrderBlocks(lines)
+        assertEquals(1, blocks.size, "促销行不应成为订单边界：${blocks.size} 块")
+        // 促销行整行出局（噪音表），不污染金额候选
+        val trimmed = OcrPostProcessor.trimNoiseTail(lines)
+        assertTrue(trimmed.none { "任务进度" in it.text || "多单挑战" in it.text || "急送券" in it.text })
+    }
+
+    @Test
+    fun `实付后跟金额的行仍是有效订单边界`() {
+        val lines = listOf(
+            line("总优惠￥2.8实付￥28", y = 0),
+            line("实付款￥33.03", y = 100),
+            line("实付款：20", y = 200),
+            line("付款金额15.5", y = 300),
+        )
+        val blocks = OcrPostProcessor.splitOrderBlocks(lines)
+        assertEquals(4, blocks.size)
     }
 
     @Test
