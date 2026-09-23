@@ -518,4 +518,101 @@ class OcrPostProcessorTest {
         assertTrue(material.amounts.contains(23.8))
         assertTrue(material.blockText.isNotEmpty())
     }
+
+    // ---------- 票 28-A：金额候选打分 ----------
+
+    @Test
+    fun `候选打分——实付款行居首，原价优惠被惩罚`() {
+        val lines = listOf(
+            line("原价 ￥128.00", 0),
+            line("优惠券 -¥27.40", 1),
+            line("实付款 ¥51.60", 2),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        val top = m.amountCandidates.first()
+        assertEquals(51.6, top.value, 0.001)
+        // 货币符号 +40、实付关键词 +30
+        assertEquals(70, top.score)
+        // 原价/券行：货币符号 +40 但惩罚 -50，必须排在实付款之后
+        assertTrue(m.amountCandidates.first { it.value == 128.0 }.score < 0)
+        assertTrue(m.amountCandidates.first { it.value == 27.4 }.score < 0)
+    }
+
+    @Test
+    fun `候选打分——标签在上一行时同样加分`() {
+        // 支付宝账单形态：「付款金额」标签行独立成行，金额在下一行
+        val lines = listOf(
+            line("付款金额", 0),
+            line("98.00", 1),
+            line("完成", 2),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        val top = m.amountCandidates.first()
+        assertEquals(98.0, top.value, 0.001)
+        // 独立两位小数 +25、上一行「付款金额」+30
+        assertEquals(55, top.score)
+    }
+
+    @Test
+    fun `候选打分——同值合并取高分`() {
+        val lines = listOf(
+            line("原价￥33.03", 0),
+            line("实付款￥33.03", 1),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        val c = m.amountCandidates.single()
+        assertEquals(33.03, c.value, 0.001)
+        assertEquals(70, c.score, "惩罚版（-10）应被实付款版（70）覆盖")
+    }
+
+    // ---------- 票 28-B：后置交叉验证 ----------
+
+    @Test
+    fun `needsReview——金额不在候选集时触发`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "",
+            normalizedDates = emptyList(),
+            amounts = listOf(14.5),
+            currencyAmounts = listOf(14.5),
+        )
+        // order_12 形态：模型输出 14.0，候选集只有 14.5
+        val draft = Draft(amountPaid = 14.0, datePaid = "2026-09-01", category = "其他")
+        assertTrue(OcrPostProcessor.needsReview(draft, material, listOf("2026-09-01")))
+    }
+
+    @Test
+    fun `needsReview——金额与日期都在候选集时不触发`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "",
+            normalizedDates = emptyList(),
+            amounts = listOf(14.5),
+            currencyAmounts = listOf(14.5),
+        )
+        val draft = Draft(amountPaid = 14.5, datePaid = "2026-09-01", category = "其他")
+        assertTrue(!OcrPostProcessor.needsReview(draft, material, listOf("2026-09-01")))
+    }
+
+    @Test
+    fun `needsReview——日期候选存在却输出空日期时触发`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "",
+            normalizedDates = emptyList(),
+            amounts = listOf(14.5),
+            currencyAmounts = listOf(14.5),
+        )
+        val draft = Draft(amountPaid = 14.5, datePaid = "", category = "其他")
+        assertTrue(OcrPostProcessor.needsReview(draft, material, listOf("2026-09-01")))
+    }
+
+    @Test
+    fun `needsReview——无日期候选时空日期合法`() {
+        val material = OcrPostProcessor.StructuredMaterial(
+            blockText = "",
+            normalizedDates = emptyList(),
+            amounts = listOf(14.5),
+            currencyAmounts = listOf(14.5),
+        )
+        val draft = Draft(amountPaid = 14.5, datePaid = "", category = "其他")
+        assertTrue(!OcrPostProcessor.needsReview(draft, material, emptyList()))
+    }
 }

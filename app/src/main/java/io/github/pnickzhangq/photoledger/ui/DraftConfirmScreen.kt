@@ -70,6 +70,15 @@ fun DraftConfirmScreen(
             Text("（无截图——手工录入）", style = MaterialTheme.typography.bodySmall)
         }
 
+        // ---- 票 28-B：交叉验证失败 → 提示重点核对 ----
+        if (draft.needsReview) {
+            Text(
+                "识别置信度较低，请重点核对金额与日期",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
         // ---- 可编辑字段 ----
         OutlinedTextField(
             value = merchant, onValueChange = { merchant = it },

@@ -53,4 +53,18 @@ class PromptBuilderTest {
         val p = PromptBuilder.buildFromOcr(listOf("其他"), "实付款￥1", emptyList(), emptyList())
         assertTrue("实付" in p, "prompt 须写明实付款口径（CONTEXT.md）")
     }
+
+    @Test
+    fun `OCR 版 prompt 金额候选按分排序并标注最高分项（票 28-A）`() {
+        val p = PromptBuilder.buildFromOcr(
+            categories = listOf("其他"),
+            ocrText = "原价￥128\n实付款￥33.03",
+            normalizedDates = listOf("2026-09-17"),
+            amounts = listOf(33.03, 128.0),
+            topAmount = 33.03,
+        )
+        // 按可能性排序：33.03 在 128.0 前
+        assertTrue(p.indexOf("33.03") < p.indexOf("128.0"), "高分行应排前：$p")
+        assertTrue("第一项最可能是实付款" in p, "应标注最高分项：$p")
+    }
 }

@@ -261,7 +261,26 @@ object OcrPostProcessor {
         val amounts: List<Double>,
         /** 带 ¥/￥ 货币符号行的金额——金额的最强信号，供引擎锚定兜底（anchorAmount）。 */
         val currencyAmounts: List<Double>,
+        /**
+         * 票 28-A：金额候选按上下文打分降序（同分保持阅读顺序）。分值来源：
+         * 货币符号行 +40、负号行 +35、区块首个独立两位小数行 +25、
+         * 实付类关键词（本行或紧邻上一行）+30、优惠/原价类 -50。
+         */
+        val amountCandidates: List<AmountCandidate> = emptyList(),
     )
+
+    /** 票 28-A：带打分的金额候选（sourceLine 供调试与测试定位）。 */
+    data class AmountCandidate(
+        val value: Double,
+        val score: Int,
+        val sourceLine: String,
+    )
+
+    /** 上下文高分关键词：紧邻这些词的金额更可能是实付款（借鉴 SpendTrace AmountExtractor）。 */
+    private val CTX_HIGH = Regex("实付|付款金额|支付金额|交易金额|消费金额|应付|需付款|合计|总额")
+
+    /** 上下文惩罚关键词：优惠/原价类金额几乎必不是实付款。权重压过高分（先查高分再查惩罚）。 */
+    private val CTX_PENALTY = Regex("优惠|原价|券|红包|满减|抵扣|立减|积分|返现")
 
     fun buildStructuredMaterial(lines: List<OcrLine>, contextYear: Int? = null): StructuredMaterial {
         val blocks = splitOrderBlocks(lines)
@@ -270,8 +289,21 @@ object OcrPostProcessor {
         val preferred = linkedSetOf<String>()
         val amounts = linkedSetOf<Double>()
         val currencyAmounts = linkedSetOf<Double>()
+        // 票 28-A：value → (score, sourceLine)，同值合并取高分
+        val candidateScores = LinkedHashMap<Double, Pair<Int, String>>()
         var firstDecimalAnchored = false
         var prevText = ""
+        fun addCandidate(value: Double, baseScore: Int, line: String) {
+            val context = line + "\n" + prevText
+            val ctxScore = when {
+                CTX_HIGH.containsMatchIn(context) -> 30
+                CTX_PENALTY.containsMatchIn(context) -> -50
+                else -> 0
+            }
+            val score = baseScore + ctxScore
+            val existing = candidateScores[value]
+            if (existing == null || score > existing.first) candidateScores[value] = score to line
+        }
         for (line in lines) {
             val date = normalizeDate(line.text, year)
             if (date != null) {
@@ -291,6 +323,7 @@ object OcrPostProcessor {
                 hasCurrency -> normalizeAmount(line.text)?.let {
                     amounts.add(it)
                     currencyAmounts.add(it)
+                    addCandidate(it, 40, line.text)
                 }
                 date == null -> {
                     val text = line.text.trim()
@@ -306,10 +339,12 @@ object OcrPostProcessor {
                         // 负号行（「-29.90」）与区块首个独立两位小数行（「15.40」，负号
                         // 可能被 OCR 丢）是账单详情页的金额形态，与货币符号同级强信号
                         if (isSignedAmount) currencyAmounts.add(it)
+                        addCandidate(it, if (isSignedAmount) 35 else 0, line.text)
                     }
                     if (!firstDecimalAnchored && AMOUNT_STANDALONE.containsMatchIn(text)) {
                         normalizeAmount(text, allowDecimalRestore = false)?.let {
                             currencyAmounts.add(it)
+                            addCandidate(it, 25, line.text)
                             firstDecimalAnchored = true
                         }
                     }
@@ -321,11 +356,15 @@ object OcrPostProcessor {
             block.joinToString("\n") { cleanLineText(it.text) }
         }
         val effectiveDates = if (preferred.isNotEmpty()) preferred.toList() else dates.toList()
+        val amountCandidates = candidateScores.entries
+            .map { AmountCandidate(it.key, it.value.first, it.value.second) }
+            .sortedWith(compareByDescending { it.score })
         return StructuredMaterial(
             blockText = text,
             normalizedDates = effectiveDates,
             amounts = amounts.toList(),
             currencyAmounts = currencyAmounts.toList(),
+            amountCandidates = amountCandidates,
         )
     }
 
@@ -342,6 +381,19 @@ object OcrPostProcessor {
         if (kotlin.math.abs(draft.amountPaid - only) < 0.005) return draft
         if (material.amounts.any { kotlin.math.abs(it - draft.amountPaid) < 0.005 }) return draft
         return draft.copy(amountPaid = only)
+    }
+
+    /**
+     * 票 28-B 后置交叉验证：模型输出与确定性候选冲突 → 低置信，确认页提示重点核对
+     * （复核机制本身已存在——所有草稿须确认才入账，本标志只做可视化引导）。
+     * - 金额不在候选集（±0.005）：模型从噪声里抄了个候选之外的数（order_12 14.5→14.0 类）
+     * - 日期候选存在却输出空串：文法允许空选择，但清单非空时选空高度可疑
+     * - 输出日期不在候选清单：withDateAlternatives 理论上已拦截，此处兜底防御
+     */
+    fun needsReview(draft: Draft, material: StructuredMaterial, dateCandidates: List<String>): Boolean {
+        if (dateCandidates.isNotEmpty() && draft.datePaid.take(10) !in dateCandidates) return true
+        if (material.amounts.none { kotlin.math.abs(it - draft.amountPaid) < 0.005 }) return true
+        return false
     }
 
     /**

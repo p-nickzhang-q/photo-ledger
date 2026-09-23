@@ -51,13 +51,19 @@ class ExtractionEngine(
             val material = OcrPostProcessor.buildStructuredMaterial(block, year)
             // 票 07 提速：日期只到天——候选与 prompt 清单都截到 YYYY-MM-DD（去重）
             val dateOnly = material.normalizedDates.map { it.take(10) }.distinct()
-            val prompt = PromptBuilder.buildFromOcr(categories, material.blockText, dateOnly, material.amounts)
+            // 票 28-A：金额候选按打分降序喂给模型，缩小数字噪声下的搜索空间
+            val amountOrder = material.amountCandidates.map { it.value }
+            val prompt = PromptBuilder.buildFromOcr(
+                categories, material.blockText, dateOnly, amountOrder, amountOrder.firstOrNull(),
+            )
             // 日期选择编码进文法：有候选=候选+空串；无候选=锁死空串（模型无法编造日期）
             val dateGrammar = GrammarGenerator.withDateAlternatives(grammar, dateOnly)
             val raw = transport.completeText(prompt, dateGrammar)
             // 金额锚定兜底（真机 51.6→20）：唯一的货币符号金额与模型输出冲突时确定性替换
             val draft = DraftNormalizer.parse(raw, categories)
-            OcrPostProcessor.anchorAmount(draft, material)
+            val anchored = OcrPostProcessor.anchorAmount(draft, material)
+            // 票 28-B：交叉验证失败 → 低置信标志，确认页提示重点核对
+            anchored.copy(needsReview = OcrPostProcessor.needsReview(anchored, material, dateOnly))
         }
     }
 }

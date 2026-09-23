@@ -24,12 +24,15 @@ object PromptBuilder {
     /**
      * OCR 文本行版（票 12）：输入是后处理层整理过的素材而非原始截图。
      * 口径要求与图像版完全一致；额外给出规范化日期/金额清单作锚点。
+     * 票 28-A：amounts 按候选打分降序传入（topAmount 为最高分项），引导 0.6B
+     * 在数字噪声多的页面上优先对准实付款——不改变口径要求本身。
      */
     fun buildFromOcr(
         categories: List<String>,
         ocrText: String,
         normalizedDates: List<String>,
         amounts: List<Double>,
+        topAmount: Double? = null,
     ): String = buildString {
         appendLine("以下是从一张订单截图 OCR 识别并整理出的文本行（自上而下、自左而右，可能有错字或无关内容）：")
         appendLine(ocrText)
@@ -41,7 +44,8 @@ object PromptBuilder {
             appendLine("图中没有可识别的完整日期。datePaid 用空字符串。")
         }
         if (amounts.isNotEmpty()) {
-            appendLine("图中出现过的金额数字（供参考）：${amounts.joinToString("、")}")
+            val hint = if (topAmount != null) "，第一项最可能是实付款" else ""
+            appendLine("图中出现过的金额数字（供参考，按可能性从高到低$hint）：${amounts.joinToString("、")}")
         }
         appendLine()
         appendLine("请提取为 JSON。字段说明：")

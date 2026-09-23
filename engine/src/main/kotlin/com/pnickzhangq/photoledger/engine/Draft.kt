@@ -36,6 +36,11 @@ data class Draft(
     val orderStatus: String = "",
     /** 类别建议（从用户类别列表中选）。 */
     val category: String,
+    /**
+     * 票 28-B：后置交叉验证失败（金额不在候选集 / 日期与候选清单冲突）。
+     * 模型不输出此字段，引擎在 OCR 路线提取后填写；确认页据此提示重点核对。
+     */
+    val needsReview: Boolean = false,
 )
 
 /** 模型输出无法解析为合法 Draft 时抛出。 */
