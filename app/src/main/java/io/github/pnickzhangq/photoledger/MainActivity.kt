@@ -665,7 +665,11 @@ class MainActivity : ComponentActivity() {
             bmp.recycle()
 
             // 票 08：逐张实时取当前类别列表（管理页改完，下一张提取即生效）
-            val pipeline = OnDevicePipeline(engine, obtainQueueTransport(), repo.categoryNames())
+            // 票 27：商户记忆同步逐张取——确认过的商户在下一张截图自动回填
+            val pipeline = OnDevicePipeline(
+                engine, obtainQueueTransport(), repo.categoryNames(),
+                merchantMemory = { repo.merchantMemories() },
+            )
             when (val r = pipeline.extract(pixels, w, h, fallbackYear = java.time.Year.now().value)) {
                 is io.github.pnickzhangq.photoledger.ocr.ExtractResult.Success ->
                     io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Success(r.drafts)

@@ -6,6 +6,8 @@ package io.github.pnickzhangq.photoledger.ocr
 import com.pnickzhangq.photoledger.engine.Draft
 import com.pnickzhangq.photoledger.engine.ExtractionEngine
 import com.pnickzhangq.photoledger.engine.LlmTransport
+import com.pnickzhangq.photoledger.engine.MerchantAlias
+import com.pnickzhangq.photoledger.engine.MerchantMatcher
 
 /** 一段计时的分段结果。 */
 data class StageTimes(
@@ -30,6 +32,8 @@ class OnDevicePipeline(
     private val ocrEngine: OcrEngine,
     transport: LlmTransport,
     categories: List<String>,
+    /** 票 27：商户记忆提供方（App 接 repo；默认空 = 不回填，CLI/测试无感）。 */
+    private val merchantMemory: suspend () -> List<MerchantAlias> = { emptyList() },
 ) {
     private val engine = ExtractionEngine(transport, categories)
 
@@ -72,10 +76,33 @@ class OnDevicePipeline(
             if (drafts.isEmpty()) {
                 ExtractResult.Failure("识别到 ${lines.size} 行文本，但未找到订单块（无「实付款」特征）")
             } else {
-                ExtractResult.Success(drafts, StageTimes(t1 - t0, postMs, t2 - t1))
+                ExtractResult.Success(fillMerchants(drafts, lines), StageTimes(t1 - t0, postMs, t2 - t1))
             }
         } catch (t: Throwable) {
             ExtractResult.Failure("提取失败：${t.message}")
+        }
+    }
+
+    /**
+     * 票 27：模型不输出 merchant，空商户草稿用商户记忆本地匹配回填（命中 = 用户
+     * 确认过的商户，复核页可见可改；未命中维持留空）。记忆读取失败不阻断提取。
+     */
+    private suspend fun fillMerchants(
+        drafts: List<Draft>,
+        lines: List<OcrLine>,
+    ): List<Draft> {
+        if (drafts.none { it.merchant.isBlank() }) return drafts
+        val aliases = try {
+            merchantMemory()
+        } catch (t: Throwable) {
+            android.util.Log.w("OnDevicePipeline", "MERCHANT_MEMORY_READ_FAIL", t)
+            return drafts
+        }
+        if (aliases.isEmpty()) return drafts
+        val texts = lines.map { it.text }
+        return drafts.map { d ->
+            if (d.merchant.isNotBlank()) d
+            else d.copy(merchant = MerchantMatcher.match(texts, aliases) ?: "")
         }
     }
 }

@@ -152,4 +152,43 @@ class LedgerRepositoryTest {
         val list = repo.entries.first()
         assertEquals(listOf("B", "A"), list.map { it.merchant })
     }
+
+    // ---- 商户记忆（票 27）----
+
+    @Test
+    fun `票27——确认时商户非空则学习进记忆`() = runTest {
+        repo.confirm(sampleDraft, photoBytes = null)
+        val mem = repo.merchantMemories()
+        assertEquals(1, mem.size)
+        assertEquals("如意馄饨·干拌面光福店", mem.single().canonical)
+        assertEquals("如意馄饨·干拌面光福店", mem.single().alias)
+    }
+
+    @Test
+    fun `票27——空商户不学习，重复确认计数累加`() = runTest {
+        repo.confirm(sampleDraft.copy(merchant = ""), photoBytes = null)
+        assertTrue(repo.merchantMemories().isEmpty())
+        repo.confirm(sampleDraft, photoBytes = null)
+        repo.confirm(sampleDraft, photoBytes = null)
+        val row = db.merchantMemoryDao().all().single()
+        assertEquals(2, row.hitCount)
+    }
+
+    @Test
+    fun `票27——编辑补填商户时学习`() = runTest {
+        repo.confirm(sampleDraft.copy(merchant = ""), photoBytes = null)
+        assertTrue(repo.merchantMemories().isEmpty())
+        val entry = repo.entries.first().single()
+        repo.edit(entry) { copy(merchant = "华莱士") }
+        assertEquals("华莱士", repo.merchantMemories().single().canonical)
+    }
+
+    @Test
+    fun `票27——商户名只做空白归一，重名不产生第二行`() = runTest {
+        repo.confirm(sampleDraft.copy(merchant = " 沙县小吃 "), photoBytes = null)
+        repo.confirm(sampleDraft.copy(merchant = "沙县小吃"), photoBytes = null)
+        val rows = db.merchantMemoryDao().all()
+        assertEquals(1, rows.size)
+        assertEquals("沙县小吃", rows.single().alias)
+    }
 }

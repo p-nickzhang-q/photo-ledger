@@ -1,6 +1,7 @@
 // 票 06：账目库。schema v2（票 08）：+ categories 表（类别体系）。
 // v1→v2 迁移只建表，不触碰既有 entries 数据；种子八类在 onOpen 空表时补插
 // （首次安装与迁移后都走同一条种子路径）。
+// v3（票 27）：+ merchant_memory 表（商户记忆），只建表不碰既有数据。
 package io.github.pnickzhangq.photoledger.data
 
 import android.content.Context
@@ -11,12 +12,18 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.pnickzhangq.photoledger.engine.DEFAULT_CATEGORIES
 
-@Database(entities = [Entry::class, CategoryEntity::class], version = 2, exportSchema = true)
+@Database(
+    entities = [Entry::class, CategoryEntity::class, MerchantMemoryEntity::class],
+    version = 3,
+    exportSchema = true,
+)
 abstract class LedgerDatabase : RoomDatabase() {
 
     abstract fun entryDao(): EntryDao
 
     abstract fun categoryDao(): CategoryDao
+
+    abstract fun merchantMemoryDao(): MerchantMemoryDao
 
     companion object {
         private const val NAME = "ledger.db"
@@ -34,6 +41,21 @@ abstract class LedgerDatabase : RoomDatabase() {
                         "`sort_order` INTEGER NOT NULL)",
                 )
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_categories_name` ON `categories` (`name`)")
+            }
+        }
+
+        /** v2 → v3（+merchant_memory）。只建表，既有 entries/categories 不动。 */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `merchant_memory` (" +
+                        "`alias` TEXT NOT NULL, " +
+                        "`canonical` TEXT NOT NULL, " +
+                        "`category` TEXT, " +
+                        "`hitCount` INTEGER NOT NULL, " +
+                        "`lastUsedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`alias`))",
+                )
             }
         }
 
@@ -62,7 +84,7 @@ abstract class LedgerDatabase : RoomDatabase() {
                     LedgerDatabase::class.java,
                     NAME,
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .addCallback(SEED_CALLBACK)
                     .build()
                     .also { INSTANCE = it }

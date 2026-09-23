@@ -2,7 +2,26 @@
 
 - Owner: agent（QoderCN）
 - Created: 2026-09-23
-- Status: Todo
+- Status: In Progress（代码完成已装机 versionCode 26，待真机验证后 Resolved）
+
+## 实现记录（2026-09-23）
+
+- **A 匹配器**：engine `MerchantMatcher.kt`（MerchantAlias/MerchantMatcher 纯
+  Kotlin）。两级匹配宁缺勿错：contains 优先（多命中取最长别名）→ 模糊（仅
+  ≥3 字别名，等长滑窗编辑距离 ≤1，覆盖「蜜雪冰城→蜜雷冰城」类单字误读）。
+  阈值取 1 不取 2，防「美团/滴滴」类两字词互撞误匹配。6 个单测全过。
+- **B 存储**：Room v3 `merchant_memory` 表（alias PK/canonical/category 可空/
+  hitCount/lastUsedAt），MIGRATION_2_3 只建表不碰既有数据。DAO 全量拉取 +
+  upsert。实现时简化：**别名不做存储**（alias=canonical 自身），OCR 变体由
+  模糊匹配覆盖，省一条同步路径。
+- **学习时机**（repo 三入口收口）：confirm（商户非空即学，覆盖确认页确认与
+  编辑后确认）、edit（商户被改/补填为非空时）、addManual（手工新增非空商户）。
+  归一只去空白。
+- **回填时机**：OnDevicePipeline 加 `merchantMemory` 提供方参数（默认空，CLI/
+  测试无感），提取后对空商户草稿逐条本地匹配回填，命中进复核页可见可改；
+  记忆读取失败降级不阻断提取。MainActivity 接 `repo.merchantMemories()`。
+- 验证：engine 6 匹配单测 + app 4 学习单测全过；编译通过。
+- 遗留：真机验证（确认商户 → 同商户第二张截图自动回填）待用户实测。
 
 ## 背景 / 动机
 

@@ -11,6 +11,7 @@ import androidx.room.withTransaction
 import com.pnickzhangq.photoledger.engine.DateSource
 import com.pnickzhangq.photoledger.engine.Draft
 import com.pnickzhangq.photoledger.engine.FALLBACK_CATEGORY
+import com.pnickzhangq.photoledger.engine.MerchantAlias
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -64,6 +65,7 @@ class LedgerRepository(
 
     private val dao = db.entryDao()
     private val categoryDao = db.categoryDao()
+    private val merchantMemoryDao = db.merchantMemoryDao()
 
     val entries: Flow<List<Entry>> = dao.observeAll()
 
@@ -131,6 +133,7 @@ class LedgerRepository(
     /**
      * 确认 Draft → 落库 Entry（CONTEXT.md「Draft」：确认后才成为 Entry）。
      * photoBytes 为原始截图（可 null——导入无图场景）；字段以确认界面编辑后的值为准。
+     * 票 27：确认时商户非空则学习进商户记忆（下次同商户截图自动回填）。
      */
     suspend fun confirm(
         draft: Draft,
@@ -144,6 +147,7 @@ class LedgerRepository(
         thumb: Bitmap? = null,
     ): Long {
         val (photoPath, thumbPath) = photoStore.save(photoBytes, thumb)
+        learnMerchant(editedMerchant)
         return dao.insert(
             Entry(
                 merchant = editedMerchant,
@@ -168,26 +172,59 @@ class LedgerRepository(
         currency: String = "CNY",
         dateSource: DateSource = DateSource.ORDER_TIME,
         orderStatus: String = "",
-    ): Long = dao.insert(
-        Entry(
-            merchant = merchant,
-            amountPaid = amountPaid,
-            currency = currency,
-            datePaid = datePaid,
-            dateSource = dateSource.name,
-            orderStatus = orderStatus,
-            category = category,
-            photoPath = null,
-            thumbPath = null,
-        ),
-    )
+    ): Long {
+        learnMerchant(merchant)
+        return dao.insert(
+            Entry(
+                merchant = merchant,
+                amountPaid = amountPaid,
+                currency = currency,
+                datePaid = datePaid,
+                dateSource = dateSource.name,
+                orderStatus = orderStatus,
+                category = category,
+                photoPath = null,
+                thumbPath = null,
+            ),
+        )
+    }
 
     /** 放弃 Draft：什么都不发生（S3：放弃不留痕）。显式存在以承载测试断言。 */
     fun discard() = Unit
 
-    /** 编辑 Entry（modifiedAt 刷新）。 */
+    /** 编辑 Entry（modifiedAt 刷新）。票 27：商户被改/补填成非空时学习。 */
     suspend fun edit(entry: Entry, changes: Entry.() -> Entry) {
-        dao.update(entry.run(changes).let { it.copy(modifiedAt = System.currentTimeMillis()) })
+        val updated = entry.run(changes).let { it.copy(modifiedAt = System.currentTimeMillis()) }
+        dao.update(updated)
+        if (updated.merchant.isNotBlank() && updated.merchant != entry.merchant) {
+            learnMerchant(updated.merchant)
+        }
+    }
+
+    // ---- 商户记忆（票 27）----
+
+    /**
+     * 学习：确认/补填的商户名进记忆表（upsert，命中计数累加）。
+     * 空白忽略；归一只去空白——商户名里的「·」等字符是有区分度的信息。
+     */
+    suspend fun learnMerchant(name: String) = withContext(Dispatchers.IO) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return@withContext
+        val existing = merchantMemoryDao.byAlias(clean)
+        merchantMemoryDao.upsert(
+            MerchantMemoryEntity(
+                alias = clean,
+                canonical = clean,
+                category = existing?.category,
+                hitCount = (existing?.hitCount ?: 0) + 1,
+                lastUsedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    /** 商户别名全量（提取器逐张取，几百条内毫秒级）。 */
+    suspend fun merchantMemories(): List<MerchantAlias> = withContext(Dispatchers.IO) {
+        merchantMemoryDao.all().map { MerchantAlias(alias = it.alias, canonical = it.canonical) }
     }
 
     /**
