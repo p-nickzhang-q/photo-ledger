@@ -24,7 +24,7 @@ android {
         minSdk = 29
         targetSdk = 36
         versionCode = 27
-        versionName = "0.4.8"
+        versionName = "0.4.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // 票 04：冒烟阶段只出 arm64（目标机 V2183A）；后续需要再扩
