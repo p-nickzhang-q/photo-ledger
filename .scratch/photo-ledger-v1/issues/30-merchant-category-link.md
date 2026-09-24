@@ -2,7 +2,18 @@
 
 - Owner: agent（QoderCN）
 - Created: 2026-09-23
-- Status: In Progress（代码完成，versionCode 28 待装机验证——装机时设备掉线）
+- Status: Resolved
+
+## Resolved
+
+- 结论（2026-09-23）：全部落地并真机验证通过（vivo V2183A，versionCode 28，
+  用户实测「没问题了」）。命中商户的草稿类别直接用记忆值（种子映射或用户
+  确认值），复核页可见可改；契约三耦合未动。
+- 真机 bug 追加修复（fa54a40）：商户回填曾对整图行做一次匹配，一图多单时
+  全部回填同一商户。改为引擎逐块钩子（extractFromOcr merchantResolver，
+  各订单区块只用自己区块的行匹配），OnDevicePipeline 整图 fillMerchants
+  删除。新增两单测：多单各自匹配、类别不在列表不覆盖（累计 engine 11）。
+- 遗留确认：票 31（LLM 兜底提商户）经评估不做，理由见背景节。
 
 ## 实现记录（2026-09-23）
 
