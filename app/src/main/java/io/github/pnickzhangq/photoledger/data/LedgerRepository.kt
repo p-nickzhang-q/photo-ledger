@@ -147,7 +147,7 @@ class LedgerRepository(
         thumb: Bitmap? = null,
     ): Long {
         val (photoPath, thumbPath) = photoStore.save(photoBytes, thumb)
-        learnMerchant(editedMerchant)
+        learnMerchant(editedMerchant, editedCategory)
         return dao.insert(
             Entry(
                 merchant = editedMerchant,
@@ -173,7 +173,7 @@ class LedgerRepository(
         dateSource: DateSource = DateSource.ORDER_TIME,
         orderStatus: String = "",
     ): Long {
-        learnMerchant(merchant)
+        learnMerchant(merchant, category)
         return dao.insert(
             Entry(
                 merchant = merchant,
@@ -192,39 +192,42 @@ class LedgerRepository(
     /** 放弃 Draft：什么都不发生（S3：放弃不留痕）。显式存在以承载测试断言。 */
     fun discard() = Unit
 
-    /** 编辑 Entry（modifiedAt 刷新）。票 27：商户被改/补填成非空时学习。 */
+    /** 编辑 Entry（modifiedAt 刷新）。票 27：商户被改/补填成非空时学习（票 30 连类别）。 */
     suspend fun edit(entry: Entry, changes: Entry.() -> Entry) {
         val updated = entry.run(changes).let { it.copy(modifiedAt = System.currentTimeMillis()) }
         dao.update(updated)
         if (updated.merchant.isNotBlank() && updated.merchant != entry.merchant) {
-            learnMerchant(updated.merchant)
+            learnMerchant(updated.merchant, updated.category)
         }
     }
 
     // ---- 商户记忆（票 27）----
 
     /**
-     * 学习：确认/补填的商户名进记忆表（upsert，命中计数累加）。
-     * 空白忽略；归一只去空白——商户名里的「·」等字符是有区分度的信息。
+     * 学习：确认/补填的商户名进记忆表（upsert，命中计数累加；票 30 类别随之记录，
+     * 新类别非空则覆盖）。空白忽略；归一只去空白——商户名里的「·」等字符是有区分度的信息。
      */
-    suspend fun learnMerchant(name: String) = withContext(Dispatchers.IO) {
+    suspend fun learnMerchant(name: String, category: String? = null) = withContext(Dispatchers.IO) {
         val clean = name.trim()
         if (clean.isEmpty()) return@withContext
         val existing = merchantMemoryDao.byAlias(clean)
+        val newCategory = category?.trim()?.takeIf { it.isNotEmpty() }
         merchantMemoryDao.upsert(
             MerchantMemoryEntity(
                 alias = clean,
                 canonical = clean,
-                category = existing?.category,
+                category = newCategory ?: existing?.category,
                 hitCount = (existing?.hitCount ?: 0) + 1,
                 lastUsedAt = System.currentTimeMillis(),
             ),
         )
     }
 
-    /** 商户别名全量（提取器逐张取，几百条内毫秒级）。 */
+    /** 商户别名全量（提取器逐张取，几百条内毫秒级；票 30 类别随行带出）。 */
     suspend fun merchantMemories(): List<MerchantAlias> = withContext(Dispatchers.IO) {
-        merchantMemoryDao.all().map { MerchantAlias(alias = it.alias, canonical = it.canonical) }
+        merchantMemoryDao.all().map {
+            MerchantAlias(alias = it.alias, canonical = it.canonical, category = it.category)
+        }
     }
 
     /**

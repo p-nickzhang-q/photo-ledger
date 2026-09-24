@@ -51,4 +51,32 @@ class MerchantMatcherTest {
     fun `等长整行单字误读也命中`() {
         assertEquals("蜜雪冰城", MerchantMatcher.match(listOf("蜜雷冰城"), aliases))
     }
+
+    // ---- 票 30：类别联动 ----
+
+    private val withCategory = listOf(
+        MerchantAlias("沙县小吃", "沙县小吃", "餐饮"),
+        MerchantAlias("蜜雪冰城", "蜜雪冰城", "餐饮"),
+    )
+
+    @Test
+    fun `matchDetail 命中返回类别`() {
+        val hit = MerchantMatcher.matchDetail(listOf("闪购沙县小吃(光福店）"), withCategory)
+        assertEquals("沙县小吃", hit?.canonical)
+        assertEquals("餐饮", hit?.category)
+        // match() 兼容入口仍只给 canonical
+        assertEquals("沙县小吃", MerchantMatcher.match(listOf("闪购沙县小吃(光福店）"), withCategory))
+    }
+
+    @Test
+    fun `matchDetail 模糊命中也带类别`() {
+        val hit = MerchantMatcher.matchDetail(listOf("蜜雷冰城（光福店）"), withCategory)
+        assertEquals("蜜雪冰城", hit?.canonical)
+        assertEquals("餐饮", hit?.category)
+    }
+
+    @Test
+    fun `matchDetail 未命中返回 null`() {
+        assertEquals(null, MerchantMatcher.matchDetail(listOf("总优惠￥2.8实付￥28"), withCategory))
+    }
 }

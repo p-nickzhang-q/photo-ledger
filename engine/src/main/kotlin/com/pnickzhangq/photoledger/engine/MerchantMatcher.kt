@@ -12,34 +12,44 @@ package com.pnickzhangq.photoledger.engine
  *   短词互撞的误匹配
  * 全部纯函数，可独立单测。
  */
-data class MerchantAlias(val alias: String, val canonical: String)
+data class MerchantAlias(
+    val alias: String,
+    val canonical: String,
+    /** 票 30：记忆顺带确认的类别（种子为品牌→内置八类映射；学习入口传确认值）。 */
+    val category: String? = null,
+)
 
 object MerchantMatcher {
 
-    fun match(lines: List<String>, aliases: List<MerchantAlias>): String? {
+    /** 兼容入口：只要 canonical。 */
+    fun match(lines: List<String>, aliases: List<MerchantAlias>): String? =
+        matchDetail(lines, aliases)?.canonical
+
+    /** 票 30：命中返回完整别名对象（canonical + category 供联动回填）。 */
+    fun matchDetail(lines: List<String>, aliases: List<MerchantAlias>): MerchantAlias? {
         if (lines.isEmpty() || aliases.isEmpty()) return null
         val cleanLines = lines.map { it.replace(" ", "").replace("　", "") }.filter { it.length >= 2 }
         if (cleanLines.isEmpty()) return null
 
         // 1) contains：多命中取最长别名
         var bestLen = 0
-        var bestCanonical: String? = null
+        var best: MerchantAlias? = null
         for (a in aliases) {
             val alias = a.alias.replace(" ", "").replace("　", "")
             if (alias.length < 2) continue
             if (bestLen >= alias.length) continue
             if (cleanLines.any { it.contains(alias) }) {
                 bestLen = alias.length
-                bestCanonical = a.canonical
+                best = a
             }
         }
-        if (bestCanonical != null) return bestCanonical
+        if (best != null) return best
 
         // 2) 模糊：等长窗口距离 ≤1
         for (a in aliases) {
             val alias = a.alias.replace(" ", "").replace("　", "")
             if (alias.length < 3) continue
-            if (cleanLines.any { line -> fuzzyContains(line, alias) }) return a.canonical
+            if (cleanLines.any { line -> fuzzyContains(line, alias) }) return a
         }
         return null
     }

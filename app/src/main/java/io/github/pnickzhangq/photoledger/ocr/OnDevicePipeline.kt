@@ -31,7 +31,8 @@ class LowMemoryException(val availableMb: Long) :
 class OnDevicePipeline(
     private val ocrEngine: OcrEngine,
     transport: LlmTransport,
-    categories: List<String>,
+    /** 当前类别列表（票 30：记忆回填类别时校验有效性；票 08 逐张实时取）。 */
+    private val categories: List<String>,
     /** 票 27：商户记忆提供方（App 接 repo；默认空 = 不回填，CLI/测试无感）。 */
     private val merchantMemory: suspend () -> List<MerchantAlias> = { emptyList() },
 ) {
@@ -86,6 +87,7 @@ class OnDevicePipeline(
     /**
      * 票 27：模型不输出 merchant，空商户草稿用商户记忆本地匹配回填（命中 = 用户
      * 确认过的商户，复核页可见可改；未命中维持留空）。记忆读取失败不阻断提取。
+     * 票 30：命中且记忆类别在当前类别列表内（用户可能删过类）→ 类别一并联动回填。
      */
     private suspend fun fillMerchants(
         drafts: List<Draft>,
@@ -100,9 +102,12 @@ class OnDevicePipeline(
         }
         if (aliases.isEmpty()) return drafts
         val texts = lines.map { it.text }
+        val validCategories = categories.toSet()
         return drafts.map { d ->
-            if (d.merchant.isNotBlank()) d
-            else d.copy(merchant = MerchantMatcher.match(texts, aliases) ?: "")
+            if (d.merchant.isNotBlank()) return@map d
+            val hit = MerchantMatcher.matchDetail(texts, aliases) ?: return@map d
+            val category = hit.category?.takeIf { it in validCategories }
+            d.copy(merchant = hit.canonical, category = category ?: d.category)
         }
     }
 }

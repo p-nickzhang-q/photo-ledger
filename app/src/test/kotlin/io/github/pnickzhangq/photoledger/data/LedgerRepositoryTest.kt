@@ -202,4 +202,27 @@ class LedgerRepositoryTest {
             ),
         )
     }
+
+    // ---- 票 30：类别联动 ----
+
+    @Test
+    fun `票30——确认学习带类别，记忆可带出`() = runTest {
+        repo.confirm(sampleDraft.copy(merchant = "华莱士"), editedCategory = "餐饮", photoBytes = null)
+        val mem = repo.merchantMemories().single { it.alias == "华莱士" }
+        assertEquals("餐饮", mem.category)
+    }
+
+    @Test
+    fun `票30——重学时新类别覆盖旧类别`() = runTest {
+        repo.confirm(sampleDraft.copy(merchant = "华莱士"), editedCategory = "购物", photoBytes = null)
+        repo.confirm(sampleDraft.copy(merchant = "华莱士"), editedCategory = "餐饮", photoBytes = null)
+        assertEquals("餐饮", repo.merchantMemories().single { it.alias == "华莱士" }.category)
+    }
+
+    @Test
+    fun `票30——重学时空类别保留旧类别`() = runTest {
+        repo.confirm(sampleDraft.copy(merchant = "华莱士"), editedCategory = "餐饮", photoBytes = null)
+        repo.confirm(sampleDraft.copy(merchant = "华莱士"), editedCategory = "", photoBytes = null)
+        assertEquals("餐饮", repo.merchantMemories().single { it.alias == "华莱士" }.category)
+    }
 }
