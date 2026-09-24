@@ -38,6 +38,12 @@ class ExtractionEngine(
     suspend fun extractFromOcr(
         lines: List<OcrLine>,
         fallbackYear: Int? = null,
+        /**
+         * 票 27/30：商户记忆解析钩子——逐块调用，入参为该订单区块的行（不是整图，
+         * 多单时各块各自匹配，防同图多单回填成同一商户）。命中返回别名对象
+         * （canonical+category），引擎负责类别有效性校验。null = 不启用。
+         */
+        merchantResolver: (suspend (blockLines: List<OcrLine>) -> MerchantAlias?)? = null,
     ): List<Draft> {
         val usable = lines.filter { it.score >= OcrPostProcessor.MIN_LINE_SCORE }
         if (usable.isEmpty()) return emptyList()
@@ -47,6 +53,7 @@ class ExtractionEngine(
         if (trimmed.isEmpty()) return emptyList()
         val blocks = OcrPostProcessor.splitOrderBlocks(trimmed)
         val year = OcrPostProcessor.guessContextYear(trimmed) ?: fallbackYear
+        val validCategories = categories.toSet()
         return blocks.map { block ->
             val material = OcrPostProcessor.buildStructuredMaterial(block, year)
             // 票 07 提速：日期只到天——候选与 prompt 清单都截到 YYYY-MM-DD（去重）
@@ -63,7 +70,20 @@ class ExtractionEngine(
             val draft = DraftNormalizer.parse(raw, categories)
             val anchored = OcrPostProcessor.anchorAmount(draft, material)
             // 票 28-B：交叉验证失败 → 低置信标志，确认页提示重点核对
-            anchored.copy(needsReview = OcrPostProcessor.needsReview(anchored, material, dateOnly))
+            var final = anchored.copy(needsReview = OcrPostProcessor.needsReview(anchored, material, dateOnly))
+            // 票 27/30：商户记忆回填（逐块）+ 类别联动（类别须在当前类别列表内）
+            if (final.merchant.isBlank() && merchantResolver != null) {
+                val hit = try {
+                    merchantResolver(block)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (hit != null) {
+                    val category = hit.category?.takeIf { it in validCategories }
+                    final = final.copy(merchant = hit.canonical, category = category ?: final.category)
+                }
+            }
+            final
         }
     }
 }

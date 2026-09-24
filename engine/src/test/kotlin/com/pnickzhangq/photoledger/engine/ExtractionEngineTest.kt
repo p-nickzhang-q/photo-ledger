@@ -27,6 +27,62 @@ class ExtractionEngineTest {
     private val categories = listOf("餐饮", "购物", "其他")
 
     @Test
+    fun `多单时各块各自匹配商户——同图不同单不得回填同一商家`() = runTest {
+        // 票 27 真机 bug 回归：商户回填曾对整图行匹配一次，多单全部回填同一商户。
+        // 两块分别含沙县小吃/蜜雪冰城，记忆按块内容返回不同命中。
+        val transport = FakeTransport(
+            """{"amountPaid":28.0,"datePaid":"2026-09-23","category":"餐饮"}""",
+        )
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val memories = listOf(
+            MerchantAlias("沙县小吃", "沙县小吃", "餐饮"),
+            MerchantAlias("蜜雪冰城", "蜜雪冰城", "餐饮"),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("闪购沙县小吃(光福店）", 0.99f, 0),
+                ln("实付款￥28", 0.98f, 100),
+                ln("蜜雪冰城（步行街店）", 0.99f, 1000),
+                ln("实付款￥8", 0.98f, 1100),
+            ),
+            fallbackYear = 2026,
+            merchantResolver = { block ->
+                MerchantMatcher.matchDetail(block.map { it.text }, memories)
+            },
+        )
+        assertEquals(2, drafts.size)
+        assertEquals("沙县小吃", drafts[0].merchant)
+        assertEquals("蜜雪冰城", drafts[1].merchant)
+    }
+
+    @Test
+    fun `商户回填类别不在当前类别列表时不覆盖`() = runTest {
+        val transport = FakeTransport(
+            """{"amountPaid":8.0,"datePaid":"2026-09-23","category":"餐饮"}""",
+        )
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("蜜雪冰城（步行街店）", 0.99f, 0),
+                ln("实付款￥8", 0.98f, 100),
+            ),
+            fallbackYear = 2026,
+            // 记忆给的类别「饮品」不在引擎类别列表内 → 保留模型输出「餐饮」
+            merchantResolver = { MerchantAlias("蜜雪冰城", "蜜雪冰城", "饮品") },
+        )
+        assertEquals("蜜雪冰城", drafts.single().merchant)
+        assertEquals("餐饮", drafts.single().category)
+    }
+
+    @Test
     fun `编排 prompt-grammar-transport-解析`() = runTest {
         val transport = FakeTransport(
             """{"merchant":"美团","amountPaid":35.5,"currency":"CNY","datePaid":"2026-09-10 12:30:00","dateSource":"payment_time","orderStatus":"已完成","category":"餐饮"}""",

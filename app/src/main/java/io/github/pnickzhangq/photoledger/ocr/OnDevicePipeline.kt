@@ -31,8 +31,7 @@ class LowMemoryException(val availableMb: Long) :
 class OnDevicePipeline(
     private val ocrEngine: OcrEngine,
     transport: LlmTransport,
-    /** 当前类别列表（票 30：记忆回填类别时校验有效性；票 08 逐张实时取）。 */
-    private val categories: List<String>,
+    categories: List<String>,
     /** 票 27：商户记忆提供方（App 接 repo；默认空 = 不回填，CLI/测试无感）。 */
     private val merchantMemory: suspend () -> List<MerchantAlias> = { emptyList() },
 ) {
@@ -69,7 +68,21 @@ class OnDevicePipeline(
 
         // ---- 共享引擎：后处理 + prompt + GBNF + 解析（桌面同款）----
         return try {
-            val drafts = engine.extractFromOcr(lines.toEngineLines(), fallbackYear)
+            // 票 27/30：商户记忆逐块解析（钩子进引擎，多单时各块各自匹配）
+            val drafts = engine.extractFromOcr(
+                lines.toEngineLines(),
+                fallbackYear,
+                merchantResolver = { block ->
+                    val aliases = try {
+                        merchantMemory()
+                    } catch (t: Throwable) {
+                        android.util.Log.w("OnDevicePipeline", "MERCHANT_MEMORY_READ_FAIL", t)
+                        emptyList()
+                    }
+                    if (aliases.isEmpty()) null
+                    else MerchantMatcher.matchDetail(block.map { it.text }, aliases)
+                },
+            )
             val t2 = System.currentTimeMillis()
             val postMs = 0L  // 后处理在 extractFromOcr 内部，计入 LLM 段
             // 票 23：LLM 段耗时单列——队列路径原来只有总量，10s 体感无法定位是 OCR 还是解码
@@ -77,37 +90,10 @@ class OnDevicePipeline(
             if (drafts.isEmpty()) {
                 ExtractResult.Failure("识别到 ${lines.size} 行文本，但未找到订单块（无「实付款」特征）")
             } else {
-                ExtractResult.Success(fillMerchants(drafts, lines), StageTimes(t1 - t0, postMs, t2 - t1))
+                ExtractResult.Success(drafts, StageTimes(t1 - t0, postMs, t2 - t1))
             }
         } catch (t: Throwable) {
             ExtractResult.Failure("提取失败：${t.message}")
-        }
-    }
-
-    /**
-     * 票 27：模型不输出 merchant，空商户草稿用商户记忆本地匹配回填（命中 = 用户
-     * 确认过的商户，复核页可见可改；未命中维持留空）。记忆读取失败不阻断提取。
-     * 票 30：命中且记忆类别在当前类别列表内（用户可能删过类）→ 类别一并联动回填。
-     */
-    private suspend fun fillMerchants(
-        drafts: List<Draft>,
-        lines: List<OcrLine>,
-    ): List<Draft> {
-        if (drafts.none { it.merchant.isBlank() }) return drafts
-        val aliases = try {
-            merchantMemory()
-        } catch (t: Throwable) {
-            android.util.Log.w("OnDevicePipeline", "MERCHANT_MEMORY_READ_FAIL", t)
-            return drafts
-        }
-        if (aliases.isEmpty()) return drafts
-        val texts = lines.map { it.text }
-        val validCategories = categories.toSet()
-        return drafts.map { d ->
-            if (d.merchant.isNotBlank()) return@map d
-            val hit = MerchantMatcher.matchDetail(texts, aliases) ?: return@map d
-            val category = hit.category?.takeIf { it in validCategories }
-            d.copy(merchant = hit.canonical, category = category ?: d.category)
         }
     }
 }
