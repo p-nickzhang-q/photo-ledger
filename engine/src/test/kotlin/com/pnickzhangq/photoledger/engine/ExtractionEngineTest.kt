@@ -11,6 +11,7 @@ class ExtractionEngineTest {
     private class FakeTransport(val response: String) : LlmTransport {
         var lastGrammar: String? = null
         var lastPrompt: String? = null
+        var calls = 0
 
         override suspend fun complete(
             imageData: ByteArray,
@@ -20,6 +21,7 @@ class ExtractionEngineTest {
         ): String {
             lastGrammar = grammar
             lastPrompt = prompt
+            calls++
             return response
         }
     }
@@ -80,6 +82,90 @@ class ExtractionEngineTest {
         )
         assertEquals("蜜雪冰城", drafts.single().merchant)
         assertEquals("餐饮", drafts.single().category)
+    }
+
+    // ---- 票 29：规则快路径 ----
+
+    @Test
+    fun `快路径——实付强锚加唯一日期加品牌类别命中时跳过LLM`() = runTest {
+        val transport = FakeTransport("""{"amountPaid":0.0,"datePaid":"","category":"其他"}""")
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("蜜雪冰城（步行街店）", 0.99f, 0),
+                ln("下单时间2026-09-23 11:12", 0.99f, 50),
+                ln("实付款￥8.0", 0.98f, 100),
+            ),
+            fallbackYear = 2026,
+            fastPath = true,
+        )
+        assertEquals(0, transport.calls, "快路径命中不应调用 LLM")
+        val d = drafts.single()
+        assertEquals(8.0, d.amountPaid, 0.001)
+        assertEquals("2026-09-23", d.datePaid)
+        assertEquals("餐饮", d.category, "品牌字典命中 → 类别")
+    }
+
+    @Test
+    fun `快路径——多候选分差不足或双日期或无品牌时降级LLM`() = runTest {
+        val transport = FakeTransport("""{"amountPaid":28.0,"datePaid":"2026-09-23","category":"餐饮"}""")
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        // 无品牌（格瑞思不在字典）→ 降级
+        val degraded = engine.extractFromOcr(
+            listOf(
+                ln("格瑞思", 0.99f, 0),
+                ln("下单时间2026-09-23 11:12", 0.99f, 50),
+                ln("实付款￥28", 0.98f, 100),
+            ),
+            fallbackYear = 2026,
+            fastPath = true,
+        )
+        assertEquals(1, transport.calls)
+        assertEquals(28.0, degraded.single().amountPaid, 0.001, "格瑞思无品牌命中，应走LLM")
+
+        // 双强锚同块（合计+实付款，分差 0.5 < 20）→ 降级
+        val degraded2 = engine.extractFromOcr(
+            listOf(
+                ln("蜜雪冰城", 0.99f, 0),
+                ln("合计￥27.5", 0.98f, 50),
+                ln("实付款￥28", 0.98f, 100),
+            ),
+            fallbackYear = 2026,
+            fastPath = true,
+        )
+        assertEquals(2, transport.calls)
+        assertEquals(1, degraded2.size)
+        assertEquals(28.0, degraded2.single().amountPaid, 0.001)
+    }
+
+    @Test
+    fun `快路径——唯一货币金额的极简页可走快路径`() = runTest {
+        // 票 28 真机形态：极简支付成功页只有 ¥51.60，无实付字样——单候选即可判
+        val transport = FakeTransport("""{"amountPaid":0.0,"datePaid":"","category":"其他"}""")
+        val engine = ExtractionEngine(transport, categories)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("蜜雪冰城", 0.99f, 0),
+                ln("¥51.60", 0.98f, 100),
+            ),
+            fallbackYear = 2026,
+            fastPath = true,
+        )
+        assertEquals(0, transport.calls)
+        assertEquals(51.6, drafts.single().amountPaid, 0.001)
+        assertEquals("", drafts.single().datePaid, "无日期候选 → 空串（导入时兜底）")
     }
 
     @Test

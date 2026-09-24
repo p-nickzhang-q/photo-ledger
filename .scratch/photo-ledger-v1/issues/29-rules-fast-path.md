@@ -2,7 +2,29 @@
 
 - Owner: agent（QoderCN）
 - Created: 2026-09-23
-- Status: Todo（已定票未开工）
+- Status: Resolved
+
+## Resolved
+
+- 结论（2026-09-23）：落地并真机验证通过（vivo V2183A，versionCode 29，
+  用户实测「没问题」）。逐块快路径 + LLM 降级混合模式为 App/闸门默认行为。
+- 实现：engine `RulesFastPath.tryBuild`（suspend，逐块）——条件为「金额候选
+  非空且（top1 强锚 ≥70 或唯一候选）且（多候选时分差 ≥20）」+「日期锚定候选
+  ≤1」+「品牌字典（DEFAULT_MERCHANT_MEMORY 种子同源）命中类别」，三者全满足
+  毫秒级出 Draft（needsReview 恒 false，金额/日期按构造必然过交叉验证）；
+  任一不满足 → 该块降级 LLM。类别无品牌命中时降级而非输出「其他」——保持
+  类别质量口径。merchantResolver 逐块钩子（票 27/30）复用。
+- 接线：`extractFromOcr` 加 `fastPath: Boolean = false`（默认 false 保旧调用
+  方语义）；OnDevicePipeline 与 GateCommand 均开 true——闸门验证的就是真实
+  生产行为。
+- 验收数据：30 张闸门（gate-report-ticket29.md）实付款 96.7%、日期 100%、
+  商家/类别 100% PASS——与 LLM 全跑基线完全一致零回归；闸门总耗时
+  7m07s → **2m44s**（含编译），绝大多数图被规则接住，快路径覆盖符合预期。
+- 测试：engine 新增 4 用例（强锚跳过 LLM / 无品牌+双强锚降级 / 唯一货币金额
+  极简页 / 多单各自匹配沿用票 30），FakeTransport 加 calls 计数断言 LLM 调用。
+- 附加修复（随本票）：MerchantMatcher 模糊匹配对**含数字/字母别名禁用**——
+  「711」曾把日期行「…09-2311:12」的「311」窗口模糊成单字误读，格瑞思订单
+  被回填成 711（真机回归单测覆盖）。
 
 ## 背景 / 动机
 

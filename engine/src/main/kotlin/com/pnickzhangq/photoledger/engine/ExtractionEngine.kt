@@ -44,6 +44,12 @@ class ExtractionEngine(
          * （canonical+category），引擎负责类别有效性校验。null = 不启用。
          */
         merchantResolver: (suspend (blockLines: List<OcrLine>) -> MerchantAlias?)? = null,
+        /**
+         * 票 29：规则快路径开关——逐块先试确定性提取（唯一实付强锚 + 唯一日期 +
+         * 品牌类别命中 → 毫秒级出草稿），不满足的块降级 LLM。App/闸门开 true
+         * （闸门验证的就是真实生产行为），默认 false 保持旧调用方语义。
+         */
+        fastPath: Boolean = false,
     ): List<Draft> {
         val usable = lines.filter { it.score >= OcrPostProcessor.MIN_LINE_SCORE }
         if (usable.isEmpty()) return emptyList()
@@ -55,6 +61,15 @@ class ExtractionEngine(
         val year = OcrPostProcessor.guessContextYear(trimmed) ?: fallbackYear
         val validCategories = categories.toSet()
         return blocks.map { block ->
+            // 票 29：规则快路径先行，拿不准的块降级 LLM
+            if (fastPath) {
+                val fast = try {
+                    RulesFastPath.tryBuild(block, year, merchantResolver)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (fast != null) return@map fast
+            }
             val material = OcrPostProcessor.buildStructuredMaterial(block, year)
             // 票 07 提速：日期只到天——候选与 prompt 清单都截到 YYYY-MM-DD（去重）
             val dateOnly = material.normalizedDates.map { it.take(10) }.distinct()

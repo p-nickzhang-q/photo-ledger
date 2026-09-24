@@ -45,10 +45,12 @@ object MerchantMatcher {
         }
         if (best != null) return best
 
-        // 2) 模糊：等长窗口距离 ≤1
+        // 2) 模糊：等长窗口距离 ≤1。含数字/字母的短别名（711/12306/T3出行）禁用——
+        //    日期时间行里的数字串（「2311」→ 711）会形成灾难性误命中（真机票29回归）
         for (a in aliases) {
             val alias = a.alias.replace(" ", "").replace("　", "")
             if (alias.length < 3) continue
+            if (alias.any { it.isDigit() || it in 'a'..'z' || it in 'A'..'Z' }) continue
             if (cleanLines.any { line -> fuzzyContains(line, alias) }) return a
         }
         return null

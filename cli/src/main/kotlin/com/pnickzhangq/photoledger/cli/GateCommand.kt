@@ -115,7 +115,7 @@ fun runGate(
                         val fallbackYear = Regex("""(20\d{2})""").find(ann.file)?.groupValues?.get(1)?.toInt()
                             ?: Regex("""(20\d{2})""").find(ann.date)?.groupValues?.get(1)?.toInt()
                             ?: LocalDate.now().year
-                        engine.extractFromOcr(lines, fallbackYear)
+                        engine.extractFromOcr(lines, fallbackYear, fastPath = true)
                     } catch (e: Exception) {
                         extractFailed++
                         System.err.println("[提取失败] ${ann.file}: ${e.message?.take(120)}")
@@ -246,7 +246,7 @@ private suspend fun runGateScoring(
                 val fallbackYear = Regex("""(20\d{2})""").find(ann.file)?.groupValues?.get(1)?.toInt()
                     ?: Regex("""(20\d{2})""").find(ann.date)?.groupValues?.get(1)?.toInt()
                     ?: LocalDate.now().year
-                engine.extractFromOcr(lines, fallbackYear)
+                engine.extractFromOcr(lines, fallbackYear, fastPath = true)
             } catch (e: Exception) {
                 extractFailed++
                 System.err.println("[提取失败] ${ann.file}: ${e.message?.take(120)}")

@@ -82,6 +82,8 @@ class OnDevicePipeline(
                     if (aliases.isEmpty()) null
                     else MerchantMatcher.matchDetail(block.map { it.text }, aliases)
                 },
+                // 票 29：规则快路径先行，拿不准的块降级 LLM
+                fastPath = true,
             )
             val t2 = System.currentTimeMillis()
             val postMs = 0L  // 后处理在 extractFromOcr 内部，计入 LLM 段

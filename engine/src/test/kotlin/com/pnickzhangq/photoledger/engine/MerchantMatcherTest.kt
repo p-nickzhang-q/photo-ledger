@@ -52,6 +52,15 @@ class MerchantMatcherTest {
         assertEquals("蜜雪冰城", MerchantMatcher.match(listOf("蜜雷冰城"), aliases))
     }
 
+    @Test
+    fun `含数字别名不做模糊匹配——真机 711 误命中日期行回归`() {
+        // 票 29 回归：日期行「下单时间2026-09-23 11:12」的「311」曾被窗口模糊当成
+        // 「711」的单字误读，格瑞思订单被回填成 711
+        val seven = listOf(MerchantAlias("711", "711", "购物"))
+        assertEquals(null, MerchantMatcher.match(listOf("下单时间2026-09-23 11:12"), seven))
+        assertEquals("711", MerchantMatcher.match(listOf("711便利店"), seven), "contains 精确命中不受影响")
+    }
+
     // ---- 票 30：类别联动 ----
 
     private val withCategory = listOf(
