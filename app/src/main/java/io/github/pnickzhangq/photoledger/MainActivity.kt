@@ -10,6 +10,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -32,6 +33,9 @@ import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -69,6 +73,7 @@ import io.github.pnickzhangq.photoledger.data.PhotoStore
 import io.github.pnickzhangq.photoledger.data.filterEntries
 import io.github.pnickzhangq.photoledger.data.searchMonthTotals
 import io.github.pnickzhangq.photoledger.model.ModelManager
+import io.github.pnickzhangq.photoledger.update.UpdateChecker
 import io.github.pnickzhangq.photoledger.ocr.ExtractResult
 import io.github.pnickzhangq.photoledger.ocr.JniLlmTransport
 import io.github.pnickzhangq.photoledger.ocr.LitertLlmTransport
@@ -201,6 +206,9 @@ class MainActivity : ComponentActivity() {
     private var showRestoreConfirm by mutableStateOf(false)
     private var pendingRestoreUri: Uri? = null
 
+    // ---- 版本更新检查（票 31）----
+    private var updateState by mutableStateOf<UpdateChecker.State>(UpdateChecker.State.Idle)
+
     // ---- 流水搜索（票 21）----
     private var searchActive by mutableStateOf(false)
     private var searchQuery by mutableStateOf("")
@@ -211,6 +219,35 @@ class MainActivity : ComponentActivity() {
     private var ctxPtr = 0L
     private var llmReady = false
     private var modelFd: android.os.ParcelFileDescriptor? = null
+
+    /** 票 31：检查更新。manual=true 时 Toast 反馈结果；Available 态下点击入口直达 Release 页。 */
+    private fun checkUpdate(manual: Boolean) {
+        if (updateState is UpdateChecker.State.Checking) return
+        updateState = UpdateChecker.State.Checking
+        lifecycleScope.launch {
+            val version = runCatching {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }.getOrNull().orEmpty()
+            val next = UpdateChecker.check(version)
+            updateState = next
+            if (manual) {
+                val msg = when (next) {
+                    is UpdateChecker.State.UpToDate -> "已是最新版本 v${next.current}"
+                    is UpdateChecker.State.Available -> "发现新版本 v${next.latest}，再次点击前往下载"
+                    is UpdateChecker.State.Failed -> "检查失败：${next.reason}"
+                    else -> return@launch
+                }
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun openReleasePage(url: String) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure {
+                Toast.makeText(this, "无法打开浏览器", Toast.LENGTH_SHORT).show()
+            }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -233,6 +270,9 @@ class MainActivity : ComponentActivity() {
 
         // 票 17：模型就绪即后台预加载——拍照等待从「冷加载 15s + 提取 5s」缩到 ~5s
         preloadEngines()
+
+        // 票 31：冷启动静默检查更新（唯一网络调用目标 GitHub，失败无感）
+        checkUpdate(manual = false)
 
         setContent {
             LedgerTheme {
@@ -445,6 +485,25 @@ class MainActivity : ComponentActivity() {
                                     text = { Text("模型管理") },
                                     leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                                     onClick = { showMoreMenu = false; navigate(Page.ModelManage) },
+                                )
+                                // 票 31：检查更新（有新版本时红点；点击直达 Release 页）
+                                DropdownMenuItem(
+                                    text = { Text("检查更新") },
+                                    leadingIcon = {
+                                        if (updateState is UpdateChecker.State.Available) {
+                                            BadgedBox(badge = { Badge() }) {
+                                                Icon(Icons.Filled.SystemUpdate, contentDescription = null)
+                                            }
+                                        } else {
+                                            Icon(Icons.Filled.SystemUpdate, contentDescription = null)
+                                        }
+                                    },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        val s = updateState
+                                        if (s is UpdateChecker.State.Available) openReleasePage(s.url)
+                                        else checkUpdate(manual = true)
+                                    },
                                 )
                             }
                         }
