@@ -38,3 +38,4 @@ local.properties
 keystore/
 keystore.properties
 .scratch/new-samples/
+.scratch/photo-ledger-v1/fixtures/replay-*.txt
