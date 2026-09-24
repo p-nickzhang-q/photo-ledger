@@ -2,7 +2,17 @@
 
 - Owner: agent（QoderCN）
 - Created: 2026-09-24
-- Status: In Progress
+- Status: Resolved
+
+## Resolved
+
+- 结论（2026-09-24）：落地并真机验证通过（vivo V2183A，versionCode 30，
+  用户实测「没问题」）。
+- 真机首次走查发现 HTTP 404——根因：仓库当时为私有，GitHub 对匿名请求
+  隐藏存在性。随本票完成仓库开源前置：git filter-repo purge 全历史中 5 个
+  含真实支付信息的 replay 快照（字符串级校验零残留，tag 随重写重建强推），
+  MIT LICENSE 落地，仓库转 public。匿名 releases/latest 即刻可用。
+- README 路线图与 ADR-0003 已同步（联网白名单三类：模型下载/更新检查/手动导出）。
 
 ## 背景 / 动机
 
