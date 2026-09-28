@@ -22,6 +22,10 @@
 |---|---|
 | <img src="docs/images/screenshot-detail.png" width="300" alt="账目详情"> | <img src="docs/images/screenshot-menu.png" width="300" alt="更多菜单"> |
 
+| 模型管理 · 端侧模型就绪状态、本地导入 | 备份与导出 · zip 可回灌、CSV 只出不进 |
+|---|---|
+| <img src="docs/images/screenshot-model.png" width="300" alt="模型管理"> | <img src="docs/images/screenshot-backup.png" width="300" alt="备份与导出"> |
+
 ## 功能
 
 - **批量导入**：相册多选（最多 20 张）或相册/微信「分享到照片记账」，汇入同一导入队列，逐张提取、实时显示进度与耗时
