@@ -39,9 +39,10 @@ class ExtractionEngine(
         lines: List<OcrLine>,
         fallbackYear: Int? = null,
         /**
-         * 票 27/30：商户记忆解析钩子——逐块调用，入参为该订单区块的行（不是整图，
-         * 多单时各块各自匹配，防同图多单回填成同一商户）。命中返回别名对象
-         * （canonical+category），引擎负责类别有效性校验。null = 不启用。
+         * 票 27/30：商户记忆解析钩子——逐块调用，入参为该订单区块**范围内**的行
+         * （引擎按区块 y 范围从原始行取回、剔除页面 UI 条带、保留低分徽标行——
+         * 票 32），不是整图，多单时各块各自匹配，防同图多单回填成同一商户。
+         * 命中返回别名对象（canonical+category），引擎负责类别有效性校验。null = 不启用。
          */
         merchantResolver: (suspend (blockLines: List<OcrLine>) -> MerchantAlias?)? = null,
         /**
@@ -53,18 +54,26 @@ class ExtractionEngine(
     ): List<Draft> {
         val usable = lines.filter { it.score >= OcrPostProcessor.MIN_LINE_SCORE }
         if (usable.isEmpty()) return emptyList()
+        // 票 32：页面 UI 条带（tab 栏/筛选 chips/动作图标行）整体出局——真机事故：
+        // 「飞猪旅行」标签让首单错配商户「飞猪」；同时防条带进 prompt 干扰类别。
+        val uiStrips = OcrPostProcessor.uiStripLines(lines)
         // 票 23 提速：逐行丢弃噪音行（详情页的 UI 动作/运营位行不进
         // blockText 与金额/日期候选，prompt token 与假金额参考同步减少）
-        val trimmed = OcrPostProcessor.trimNoiseTail(usable)
+        val trimmed = OcrPostProcessor.trimNoiseTail(usable.filter { it !in uiStrips })
         if (trimmed.isEmpty()) return emptyList()
         val blocks = OcrPostProcessor.splitOrderBlocks(trimmed)
         val year = OcrPostProcessor.guessContextYear(trimmed) ?: fallbackYear
         val validCategories = categories.toSet()
         return blocks.map { block ->
+            // 票 32：商户匹配用「区块 y 范围内的原始行」剔除条带（含被置信度滤掉
+            // 的徽标行，如「闪购YY」）；逐块取范围保持多单各配各的行（票 30）
+            val matchLines = OcrPostProcessor.merchantMatchLines(lines, block, uiStrips)
+            val scopedResolver: (suspend (List<OcrLine>) -> MerchantAlias?)? =
+                merchantResolver?.let { r -> { _: List<OcrLine> -> r(matchLines) } }
             // 票 29：规则快路径先行，拿不准的块降级 LLM
             if (fastPath) {
                 val fast = try {
-                    RulesFastPath.tryBuild(block, year, merchantResolver)
+                    RulesFastPath.tryBuild(block, year, scopedResolver)
                 } catch (t: Throwable) {
                     null
                 }
@@ -87,9 +96,9 @@ class ExtractionEngine(
             // 票 28-B：交叉验证失败 → 低置信标志，确认页提示重点核对
             var final = anchored.copy(needsReview = OcrPostProcessor.needsReview(anchored, material, dateOnly))
             // 票 27/30：商户记忆回填（逐块）+ 类别联动（类别须在当前类别列表内）
-            if (final.merchant.isBlank() && merchantResolver != null) {
+            if (final.merchant.isBlank() && scopedResolver != null) {
                 val hit = try {
-                    merchantResolver(block)
+                    scopedResolver(block)
                 } catch (t: Throwable) {
                     null
                 }

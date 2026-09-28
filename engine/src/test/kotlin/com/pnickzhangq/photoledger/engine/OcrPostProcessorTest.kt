@@ -445,6 +445,70 @@ class OcrPostProcessorTest {
         assertEquals(listOf("第一行", "第一行右", "第二行"), texts)
     }
 
+    // ---------- 页面 UI 条带（票 32，用例取自真机转储） ----------
+
+    @Test
+    fun `页首标签栏与筛选条被剔除、商店行保留——真机飞猪误命中回归`() {
+        // 真机 2026-09-28 淘宝闪购订单列表：标签栏「飞猪旅行」曾让首单错配商户「飞猪」
+        val lines = listOf(
+            line("全部订单", y = 273, x = 40),
+            line("购物", y = 275, x = 283),
+            line("闪购外卖", y = 274, x = 439),
+            line("飞猪旅行", y = 274, x = 677),
+            line("全部", y = 392, x = 77),
+            line("待发货", y = 390, x = 290),
+            line("待收货", y = 390, x = 498),
+            line("待评价", y = 390, x = 700),
+            line("已关闭", y = 391, x = 911),
+            line("如意馄饨·干拌面····光福店〉商家备餐中", y = 483, x = 228),
+            line("含包装/配送费实付款￥16", y = 870, x = 590),
+        )
+        val strips = OcrPostProcessor.uiStripLines(lines)
+        assertEquals(
+            setOf("全部订单", "购物", "闪购外卖", "飞猪旅行", "全部", "待发货", "待收货", "待评价", "已关闭"),
+            strips.map { it.text }.toSet(),
+        )
+    }
+
+    @Test
+    fun `含数字或宽段的行不算 UI 条带——商品行与金额行天然豁免`() {
+        val lines = listOf(
+            line("x1", y = 100, x = 10),
+            line("￥15.6", y = 102, x = 200),
+            line("6", y = 101, x = 400),
+            line("如意馄饨", y = 576, x = 48),
+            line("如意馄饨荠菜鲜肉大馄饨10个-默认", y = 576, x = 334),
+            line("¥16", y = 575, x = 950),
+        )
+        assertTrue(OcrPostProcessor.uiStripLines(lines).isEmpty())
+    }
+
+    @Test
+    fun `商户匹配范围剔除条带、保留低分徽标行、不越界邻块`() {
+        val topLine = line("11:13", y = 34, x = 56)
+        val tab1 = line("闪购外卖", y = 274, x = 439)
+        val tab2 = line("飞猪旅行", y = 274, x = 677)
+        val tab3 = line("购物", y = 275, x = 283)
+        val storeRow = line("如意馄饨·干拌面····光福店〉商家备餐中", y = 483, x = 228)
+        val badge = line("闪购YY", y = 483, x = 47)
+        val paid = line("含包装/配送费实付款￥16", y = 870, x = 590)
+        val otherBlock = line("闪购YY悸动苏州光福镇店>", y = 1135, x = 50)
+        val all = listOf(topLine, tab1, tab2, tab3, storeRow, badge, paid, otherBlock)
+        val block = listOf(topLine, storeRow, badge, paid)
+        val strips = OcrPostProcessor.uiStripLines(all)
+        val scope = OcrPostProcessor.merchantMatchLines(all, block, strips).map { it.text }
+        assertTrue(scope.none { "飞猪" in it }, "标签栏不应进匹配范围：$scope")
+        assertTrue("闪购YY" in scope, "低分徽标行应在匹配范围内：$scope")
+        assertTrue("闪购YY悸动苏州光福镇店>" !in scope, "邻块行不越界：$scope")
+        assertEquals(
+            "闪购",
+            MerchantMatcher.match(
+                scope,
+                listOf(MerchantAlias("飞猪", "飞猪"), MerchantAlias("闪购", "闪购")),
+            ),
+        )
+    }
+
     // ---------- 噪音行丢弃（票 23，用例取自真机 10 张转储） ----------
 
     @Test

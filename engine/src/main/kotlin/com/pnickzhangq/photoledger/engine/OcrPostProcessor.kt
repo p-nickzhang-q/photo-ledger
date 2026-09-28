@@ -14,6 +14,12 @@ data class OcrLine(
 
     /** 行左侧 x（同 y 时先左后右）。 */
     val left: Float get() = box.getOrNull(0) ?: 0f
+
+    /** 行右侧 x（UI 条带/匹配范围判定用）。 */
+    val right: Float get() = box.getOrNull(2) ?: 0f
+
+    /** 行底部 y（UI 条带/匹配范围判定用）。 */
+    val bottom: Float get() = box.getOrNull(5) ?: 0f
 }
 
 /**
@@ -225,6 +231,82 @@ object OcrPostProcessor {
     private val PAID_ANCHOR = Regex("(?:实付款?|付款金额|支付金额)[：:]?\\s*[￥￥]?\\s*\\d")
 
     private fun isPaidAnchor(text: String): Boolean = PAID_ANCHOR.containsMatchIn(text.replace(" ", ""))
+
+    // ---------- 页面 UI 条带（票 32） ----------
+
+    /** 条带最少段数：tab 栏/筛选 chips/动作图标行都是 ≥3 条短文本并排。 */
+    private const val MIN_STRIP_SEGMENTS = 3
+
+    /** 同一水平带容差（px）：真机标签栏四段的 top 差 ≤2px。 */
+    private const val STRIP_BAND_TOLERANCE = 12f
+
+    /** 段最大宽度：内容行常含商品描述（数百 px），UI 段都是短词。 */
+    private const val STRIP_SEG_MAX_WIDTH = 210f
+
+    /** 相邻段水平间隙范围：太挤像误切碎片，太散不像一排控件。 */
+    private const val STRIP_GAP_MIN = 8f
+    private const val STRIP_GAP_MAX = 150f
+
+    /**
+     * 页面 UI 条带行（tab 栏 / 筛选 chips / 动作图标行）：同一水平带内 ≥3 条短文本
+     * 并排。真机事故（2026-09-28 淘宝闪购订单列表，两单）：首个区块因「块 = 图顶部到
+     * 首个实付行」把顶部标签栏一并纳入，商户匹配 contains 命中「飞猪旅行」→ 首单
+     * （如意馄饨）错配商户「飞猪」。结构判定不用关键词表——标签行与订单行合并 OCR
+     * 时关键词表会漏网。
+     *
+     * 保守取向：每条段须宽 ≤210px、不含数字/货币符号（保护金额表格行）、间隙 8..150px；
+     * 漏判只是回退旧行为，误判会丢订单内容，故宁缺勿滥。
+     */
+    fun uiStripLines(lines: List<OcrLine>): Set<OcrLine> {
+        if (lines.size < MIN_STRIP_SEGMENTS) return emptySet()
+        val sorted = lines.sortedWith(compareBy({ it.top }, { it.left }))
+        val strips = mutableSetOf<OcrLine>()
+        var i = 0
+        while (i < sorted.size) {
+            val bandTop = sorted[i].top
+            var j = i
+            while (j < sorted.size && sorted[j].top - bandTop <= STRIP_BAND_TOLERANCE) j++
+            if (j - i >= MIN_STRIP_SEGMENTS && isStripRow(sorted.subList(i, j))) {
+                strips += sorted.subList(i, j)
+            }
+            i = j
+        }
+        return strips
+    }
+
+    private fun isStripRow(band: List<OcrLine>): Boolean {
+        val segs = band.sortedBy { it.left }
+        segs.forEachIndexed { k, seg ->
+            if (seg.right - seg.left > STRIP_SEG_MAX_WIDTH) return false
+            val text = seg.text
+            if (text.any { it.isDigit() } || '¥' in text || '￥' in text) return false
+            if (k > 0) {
+                val gap = seg.left - segs[k - 1].right
+                if (gap < STRIP_GAP_MIN || gap > STRIP_GAP_MAX) return false
+            }
+        }
+        return true
+    }
+
+    /**
+     * 商户匹配范围（票 32）：区块 y 范围内的**原始 OCR 行**，剔除 UI 条带。
+     * 不设置信度门槛——真机「闪购YY」徽标行 0.74 被 MIN_LINE_SCORE 滤掉后，
+     * 本单仅剩标签栏能命中「闪购」，正是「飞猪」误命中的土壤；徽标/价签等
+     * 低分短行恰恰承载平台名/商户名，匹配靠本范围把它们捞回。
+     * 范围按区块 y 边界取（票 30 逐块匹配语义），相邻订单卡与底部推荐位不参与。
+     */
+    fun merchantMatchLines(
+        rawLines: List<OcrLine>,
+        block: List<OcrLine>,
+        uiStrips: Set<OcrLine>,
+    ): List<OcrLine> {
+        if (block.isEmpty()) return emptyList()
+        val top = block.minOf { it.top }
+        val bottom = block.maxOf { it.bottom }
+        return rawLines
+            .filter { it !in uiStrips && it.top >= top && it.bottom <= bottom }
+            .sortedWith(compareBy({ it.top }, { it.left }))
+    }
 
     // ---------- 噪音行丢弃（票 23 提速） ----------
 
