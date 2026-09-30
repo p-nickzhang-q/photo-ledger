@@ -248,6 +248,27 @@ class OcrPostProcessorTest {
     }
 
     @Test
+    fun `状态栏碎片与计数行不进金额候选——真机 184 5667 被抄成实付款`() {
+        // 真机事故（2026-09-30 微信支付成功页）：状态栏右侧（网速「18.4 KB/s」丢小数点
+        // 读成 184 + 「5G 5G」与电量「67」并读）被 OCR 合成「184 5667」(0.79) 进了金额
+        // 候选，0.6B 抄走 184（该页真付款是「￥8.00」）；「1台」的计数 1 混进清单。
+        val lines = listOf(
+            line("14:24", 0),
+            line("1台", 40),
+            line("184 5667", 80),
+            line("（", 120),
+            line("支付成功", 160),
+            line("和贵干货（**芹）", 200),
+            line("￥8.00", 240),
+            line("完成", 280),
+        )
+        val m = OcrPostProcessor.buildStructuredMaterial(lines, 2026)
+        assertEquals(listOf(8.0), m.amounts, "状态栏碎片/计数不得进候选池：${m.amounts}")
+        assertEquals(listOf(8.0), m.currencyAmounts)
+        assertEquals(listOf(8.0), m.amountCandidates.map { it.value }, "prompt 金额参考清单只剩货币金额")
+    }
+
+    @Test
     fun `货币金额候选——多符号行按出现序去重`() {
         val lines = listOf(
             line("商品总价 ￥79.00", 0),

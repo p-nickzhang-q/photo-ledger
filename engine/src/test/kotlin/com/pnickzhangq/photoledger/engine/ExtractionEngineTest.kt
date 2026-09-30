@@ -386,4 +386,41 @@ class ExtractionEngineTest {
         assertEquals("闪购", drafts[0].merchant, "第一单应命中本单行内的「闪购」")
         assertEquals("闪购", drafts[1].merchant)
     }
+
+    // ---- 票 33：状态栏碎片不得被抄成实付款 ----
+
+    @Test
+    fun `状态栏碎片不进金额候选——模型抄走 184 时锚定兜底回正 8 元`() = runTest {
+        // 真机事故（2026-09-30 微信支付成功页）：OCR 8 行含状态栏碎片「184 5667」
+        // （网速 18.4 丢点 + 5G 5G + 电量 67 并读，0.79 分），模型输出 amountPaid=184
+        // （该页真付款是「￥8.00」）。修复后碎片不进候选池：prompt 参考清单只剩 8.0，
+        // 且锚定兜底不再被碎片「背书」骗过。
+        val transport = FakeTransport(
+            """{"amountPaid":184.0,"datePaid":"","category":"餐饮"}""",
+        )
+        val engine = ExtractionEngine(transport, DEFAULT_CATEGORIES)
+        fun ln(text: String, score: Float, y: Int) = OcrLine(
+            text = text, score = score,
+            box = listOf(0f, y.toFloat(), 200f, y.toFloat(), 200f, (y + 40).toFloat(), 0f, (y + 40).toFloat()),
+        )
+        val drafts = engine.extractFromOcr(
+            listOf(
+                ln("14:24", 0.96f, 30),
+                ln("1台", 1.00f, 90),
+                ln("184 5667", 0.79f, 150),
+                ln("（", 0.37f, 210),
+                ln("支付成功", 1.00f, 270),
+                ln("和贵干货（**芹）", 0.94f, 330),
+                ln("￥8.00", 0.90f, 390),
+                ln("完成", 1.00f, 450),
+            ),
+            fallbackYear = 2026,
+            fastPath = true,
+        )
+        val d = drafts.single()
+        assertEquals(8.0, d.amountPaid, 0.001, "模型抄走的碎片 184 应被锚定兜底改回 8 元")
+        val amountHint = transport.lastPrompt!!.lineSequence()
+            .first { it.startsWith("图中出现过的金额数字") }
+        assertTrue(amountHint.endsWith("：8.0"), "金额参考清单应只剩 8.0：$amountHint")
+    }
 }

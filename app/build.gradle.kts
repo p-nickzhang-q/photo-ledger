@@ -23,7 +23,7 @@ android {
         applicationId = "io.github.pnickzhangq.photoledger"
         minSdk = 29
         targetSdk = 36
-        versionCode = 33
+        versionCode = 34
         versionName = "0.5.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {

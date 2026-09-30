@@ -136,6 +136,30 @@ object OcrPostProcessor {
     private val PROGRESS_NUM = Regex("""[0-9０-９]+\s*/\s*[0-9０-９]+""")
 
     /**
+     * 计数行：数字后跟量词（「1台」「共4件」）——件数是数量不是金额。真机 2026-09-30
+     * 支付成功页「1台」的 1 混进金额参考清单。前提是行内无带小数点的数字段：OCR 偶把
+     * 金额行与计数行并成一行（「8.00 1台」），带小数点说明行内有金额，不剪。
+     */
+    private val COUNT_LIKE = Regex("""\d\s*(?:台|件|个|份|张|条|次|笔|只|支|盒|瓶|罐|包|杯|位|人)""")
+
+    /** 行内是否出现带小数点的数字段（金额形态；裸整数段多为单号/计数/序号）。 */
+    private fun hasDecimalNumber(text: String): Boolean =
+        NUM.findAll(text).any { '.' in it.value || '．' in it.value }
+
+    /**
+     * 数字碎片：一行里 ≥2 段数字且全为整数形态、行内无金额标签（状态栏合并/单号片段类）。
+     * 真机 2026-09-30：状态栏右侧（网速「18.4 KB/s」丢点 + 信号「5G 5G」+ 电量「67」）
+     * 被 OCR 并成「184 5667」(0.79)，进金额候选后 0.6B 抄成实付款 184（真付款「￥8.00」）；
+     * 碎片还成了锚定兜底的「候选背书」，让兜底不敢改。「总优惠2.8实付28」类标签行有
+     * 金额上下文，不受此限。
+     */
+    private fun isNumberFragment(text: String): Boolean =
+        !CTX_HIGH.containsMatchIn(text) && !hasDecimalNumber(text) && NUM.findAll(text).count() >= 2
+
+    private fun isCountLike(text: String): Boolean =
+        !CTX_HIGH.containsMatchIn(text) && !hasDecimalNumber(text) && COUNT_LIKE.containsMatchIn(text)
+
+    /**
      * 独立「整数.两位小数」行：账单详情页金额的通用形态（微信「15.40」负号被 OCR
      * 丢失、支付宝「-29.90」、转账「-370.00」都命中）。区块内首个该形态行视为强信号——
      * 两个 App 都把交易金额放在卡片头部、标签行之前。
@@ -431,7 +455,9 @@ object OcrPostProcessor {
                         TIME_ONLY.containsMatchIn(text) ||
                         TIME_PREFIX.containsMatchIn(text) ||
                         PROGRESS_NUM.containsMatchIn(text) ||
-                        ACCT_TAIL.containsMatchIn(text)
+                        ACCT_TAIL.containsMatchIn(text) ||
+                        isNumberFragment(text) ||
+                        isCountLike(text)
                     if (!isJunkAmount) normalizeAmount(line.text, allowDecimalRestore = false)?.let {
                         amounts.add(it)
                         // 负号行（「-29.90」）与区块首个独立两位小数行（「15.40」，负号
