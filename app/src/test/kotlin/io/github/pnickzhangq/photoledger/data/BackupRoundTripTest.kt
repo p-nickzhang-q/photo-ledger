@@ -123,10 +123,12 @@ class BackupRoundTripTest {
 
         repo2.restore(BackupCodec.decode(json))
         val restored = repo2.categories.first()
+        // 票 37：「其他」恒末尾——比对以源库展示序为准（sortOrder 仍逐项一致）
+        val expected = repo1.categories.first()
 
         // 名称与顺序完全一致（id 允许重发）
-        assertEquals(categories.map { it.name }, restored.map { it.name })
-        assertEquals(categories.map { it.sortOrder }, restored.map { it.sortOrder })
+        assertEquals(expected.map { it.name }, restored.map { it.name })
+        assertEquals(expected.map { it.sortOrder }, restored.map { it.sortOrder })
         // 自定义类别确实进了备份（不只是种子八类）
         assertTrue(restored.any { it.name == "自定义A" })
         assertTrue(restored.any { it.name == "自定义B" })
@@ -147,7 +149,7 @@ class BackupRoundTripTest {
         assertTrue(restored.none { it.merchant == "旧数据" })
         // 类别同样被替换：不再含「餐饮」之外由种子提供而源库没有的类别差异
         val names = repo2.categories.first().map { it.name }
-        assertEquals(categories.map { it.name }, names)
+        assertEquals(repo1.categories.first().map { it.name }, names)
     }
 
     @Test

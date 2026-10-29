@@ -387,6 +387,13 @@ class MainActivity : ComponentActivity() {
         val searching = searchOpen && searchQuery.isNotBlank()
         val displayTotals = if (searching) searchTotals else monthTotals
 
+        // 票 34：列表滚动位置在 AppScaffold 层存活——详情页替换掉列表页时状态不销毁
+        val ledgerListState = androidx.compose.foundation.lazy.rememberLazyListState()
+        // 票 35：汇总页下钻的展开态与滚动位置同理（点明细进详情再返回不塌回顶部）
+        val summaryListState = androidx.compose.foundation.lazy.rememberLazyListState()
+        var summaryExpandedCategory by remember { mutableStateOf<String?>(null) }
+        var summaryExpandedMonth by remember { mutableStateOf<String?>(null) }
+
         // 系统返回手势/按键：搜索态先收搜索（清词），再逐页回退；根页不拦截（系统默认退出）
         BackHandler(enabled = pageStack.size > 1 || searchOpen) {
             if (searchOpen) {
@@ -535,6 +542,7 @@ class MainActivity : ComponentActivity() {
                         monthTotals = displayTotals,
                         searching = searching,
                         searchQuery = searchQuery,
+                        listState = ledgerListState,
                     )
                     is Page.ImportQueue -> ImportQueueScreen(
                         items = queueItems,
@@ -566,12 +574,21 @@ class MainActivity : ComponentActivity() {
                         onDelete = { id, _ ->
                             lifecycleScope.launch { repo.deleteCategory(id) }
                         },
+                        onReorder = { ids ->
+                            lifecycleScope.launch { repo.reorderCategories(ids) }
+                        },
                     )
                     is Page.Summary -> SummaryScreen(
                         monthTotals = monthTotals,
                         categoryTotals = currentCategoryTotals,
                         currentMonth = currentMonth,
                         entries = entries,
+                        onEntryClick = { navigate(Page.Detail(it.id)) },
+                        listState = summaryListState,
+                        expandedCategory = summaryExpandedCategory,
+                        onExpandedCategoryChange = { summaryExpandedCategory = it },
+                        expandedMonth = summaryExpandedMonth,
+                        onExpandedMonthChange = { summaryExpandedMonth = it },
                     )
                     is Page.ModelManage -> ModelManageScreen(
                         modelFile = litertlmPath?.let(::File)?.takeIf(File::exists),

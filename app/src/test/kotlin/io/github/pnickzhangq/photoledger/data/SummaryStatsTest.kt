@@ -64,4 +64,34 @@ class SummaryStatsTest {
     fun `空月返回 null`() {
         assertNull(monthStats(emptyList()))
     }
+
+    // ---- 票 35：汇总页下钻分组 ----
+
+    @Test
+    fun `按月分组——跨月不串组，空日期归空串组`() {
+        val entries = listOf(
+            entry(merchant = "九月一", datePaid = "2026-09-20 10:00:00"),
+            entry(merchant = "八月", datePaid = "2026-08-31 23:00:00"),
+            entry(merchant = "九月二", datePaid = "2026-09-01 08:00:00"),
+            entry(merchant = "无日期", datePaid = ""),
+        )
+        val byMonth = entriesByMonth(entries)
+        assertEquals(listOf("九月一", "九月二"), byMonth.getValue("2026-09").map { it.merchant })
+        assertEquals(listOf("八月"), byMonth.getValue("2026-08").map { it.merchant })
+        assertEquals(listOf("无日期"), byMonth.getValue("").map { it.merchant })
+    }
+
+    @Test
+    fun `按类别分组——只取指定月份且保持月内倒序`() {
+        val entries = listOf(
+            entry(merchant = "九月餐饮", datePaid = "2026-09-20", category = "餐饮"),
+            entry(merchant = "九月交通", datePaid = "2026-09-10", category = "交通"),
+            entry(merchant = "九月餐饮2", datePaid = "2026-09-01", category = "餐饮"),
+            entry(merchant = "八月餐饮", datePaid = "2026-08-20", category = "餐饮"),
+        )
+        val byCategory = entriesByCategory(entries, "2026-09")
+        assertEquals(listOf("九月餐饮", "九月餐饮2"), byCategory.getValue("餐饮").map { it.merchant })
+        assertEquals(listOf("九月交通"), byCategory.getValue("交通").map { it.merchant })
+        assertNull(byCategory["不存在"])
+    }
 }

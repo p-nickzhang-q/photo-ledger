@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -47,6 +49,8 @@ fun LedgerListScreen(
     monthTotals: List<MonthTotal> = emptyList(), // 设计：月头当月合计（数据来自票 09 查询）
     searching: Boolean = false,   // 票 21：搜索态（query 非空才为 true）
     searchQuery: String = "",
+    // 票 34：滚动位置由外层持有——进详情时本页离开组合，默认 state 会随之销毁跳回顶部
+    listState: LazyListState = rememberLazyListState(),
 ) {
     if (entries.isEmpty()) {
         if (searching) {
@@ -98,7 +102,7 @@ fun LedgerListScreen(
                 }
             }
         }
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
             items(
                 rows,
                 key = {

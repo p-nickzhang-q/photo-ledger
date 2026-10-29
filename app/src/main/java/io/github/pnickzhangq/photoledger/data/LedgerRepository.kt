@@ -14,6 +14,7 @@ import com.pnickzhangq.photoledger.engine.FALLBACK_CATEGORY
 import com.pnickzhangq.photoledger.engine.MerchantAlias
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -77,11 +78,15 @@ class LedgerRepository(
     /** 某月各类别实付款合计（金额倒序，含「其他」）。 */
     fun categoryTotals(month: String): Flow<List<CategoryTotal>> = dao.observeCategoryTotals(month)
 
-    /** 类别体系（票 08）：管理页与全 App 注入（提取 prompt/快选/编辑下拉）。 */
-    val categories: Flow<List<CategoryEntity>> = categoryDao.observeAll()
+    /** 类别体系（票 08）：管理页与全 App 注入（提取 prompt/快选/编辑下拉）。票 37：「其他」恒末尾。 */
+    val categories: Flow<List<CategoryEntity>> = categoryDao.observeAll().map { it.fallbackLast() }
 
-    /** 类别名称列表（提取器逐张实时取——管理页改完立即生效，无需重建管线）。 */
-    suspend fun categoryNames(): List<String> = categoryDao.list().map { it.name }
+    /** 类别名称列表（提取器逐张实时取——管理页改完立即生效，无需重建管线）。票 37：同「其他」末尾。 */
+    suspend fun categoryNames(): List<String> = categoryDao.list().fallbackLast().map { it.name }
+
+    /** 「其他」是删类别的兜底，不参与排序语义——统一压到列表末尾（票 37 真机：拖拽曾把它挪到中间）。 */
+    private fun List<CategoryEntity>.fallbackLast(): List<CategoryEntity> =
+        filterNot { it.name == FALLBACK_CATEGORY } + filter { it.name == FALLBACK_CATEGORY }
 
     /**
      * 新增类别：尾部追加。重名（含与内置冲突）由唯一索引拒绝，转 IllegalArgumentException。
@@ -127,6 +132,25 @@ class LedgerRepository(
         db.withTransaction {
             categoryDao.reassignEntries(oldName = target.name, newName = FALLBACK_CATEGORY)
             categoryDao.delete(target)
+        }
+    }
+
+    /**
+     * 票 36：类别排序——按传入 id 顺序重写 sort_order（0..n-1），拖拽松手时落库。
+     * 未列出的 id 保持原相对顺序追加尾部（防御并发增删导致的列表缺项）。
+     * 票 37：「其他」不论传在哪都压到末尾——库里顺序与展示顺序保持一致。
+     */
+    suspend fun reorderCategories(orderedIds: List<Long>) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val all = categoryDao.list()
+            val byId = all.associateBy { it.id }
+            val listed = orderedIds.mapNotNull { byId[it] }
+            val rest = all.filter { it.id !in orderedIds }
+            val merged = listed + rest
+            val ordered = merged.filter { it.name != FALLBACK_CATEGORY } + merged.filter { it.name == FALLBACK_CATEGORY }
+            ordered.forEachIndexed { index, category ->
+                if (category.sortOrder != index) categoryDao.update(category.copy(sortOrder = index))
+            }
         }
     }
 

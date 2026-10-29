@@ -4,6 +4,7 @@
 package io.github.pnickzhangq.photoledger.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,10 +15,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import io.github.pnickzhangq.photoledger.data.CategoryTotal
 import io.github.pnickzhangq.photoledger.data.Entry
 import io.github.pnickzhangq.photoledger.data.MonthTotal
+import io.github.pnickzhangq.photoledger.data.entriesByCategory
+import io.github.pnickzhangq.photoledger.data.entriesByMonth
 import io.github.pnickzhangq.photoledger.data.monthOverMonth
 import io.github.pnickzhangq.photoledger.data.monthStats
 import kotlin.math.abs
@@ -40,6 +50,13 @@ fun SummaryScreen(
     categoryTotals: List<CategoryTotal>,
     currentMonth: String,
     entries: List<Entry> = emptyList(), // 票 22：单笔画像数据源（当月过滤在页内做）
+    onEntryClick: (Entry) -> Unit = {}, // 票 35：下钻明细点单笔进详情
+    // 票 35：展开状态与滚动位置由外层持有——点明细进详情返回后保持原视图
+    listState: LazyListState = rememberLazyListState(),
+    expandedCategory: String? = null,
+    onExpandedCategoryChange: (String?) -> Unit = {},
+    expandedMonth: String? = null,
+    onExpandedMonthChange: (String?) -> Unit = {},
 ) {
     if (monthTotals.isEmpty()) {
         Column(
@@ -71,8 +88,13 @@ fun SummaryScreen(
     }
     val maxMonthTotal = monthTotals.maxOfOrNull { it.total } ?: 0.0
 
+    // 票 35：下钻——类别区与历史月区各只展开一个；分组在内存里做（entries 已是全量）
+    val monthEntries = remember(entries) { entriesByMonth(entries) }
+    val categoryEntries = remember(entries, currentMonth) { entriesByCategory(entries, currentMonth) }
+
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -141,13 +163,26 @@ fun SummaryScreen(
                 val fraction =
                     if (currentTotal > 0) (ct.total / currentTotal).toFloat().coerceIn(0f, 1f) else 0f
                 val pct = if (currentTotal > 0) ct.total / currentTotal * 100 else 0.0
+                val expanded = expandedCategory == ct.category
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onExpandedCategoryChange(if (expanded) null else ct.category) },
+                    ) {
                         Text(ct.category, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                         Text(
                             "¥${formatAmountTotal(ct.total)} · ${"%.1f".format(pct)}%",
                             style = MaterialTheme.typography.bodyMedium,
                         )
+                        ExpandChevron(expanded)
+                    }
+                    // 票 35：展开该类当月逐笔（点单笔进详情）
+                    if (expanded) {
+                        categoryEntries[ct.category].orEmpty().forEach { entry ->
+                            DrilldownRow(entry, onClick = { onEntryClick(entry) })
+                        }
                     }
                     // 占比条：宽度即占当月合计的比例
                     Box(
@@ -184,14 +219,27 @@ fun SummaryScreen(
             }
         } else {
             items(history, key = { it.month }) { m ->
+                val expanded = expandedMonth == m.month
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onExpandedMonthChange(if (expanded) null else m.month) },
+                    ) {
                         Text(formatMonth(m.month), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                         Text(
                             "¥${formatAmountTotal(m.total)} · ${m.count} 笔",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        ExpandChevron(expanded)
+                    }
+                    // 票 35：展开该月全部账目（点单笔进详情）
+                    if (expanded) {
+                        monthEntries[m.month].orEmpty().forEach { entry ->
+                            DrilldownRow(entry, onClick = { onEntryClick(entry) })
+                        }
                     }
                     // 票 22：迷你条形——该月占全期最大月的比例，分布一眼可见
                     if (maxMonthTotal > 0) {
@@ -215,5 +263,43 @@ fun SummaryScreen(
             }
         }
         item { Spacer(Modifier.height(72.dp)) }
+    }
+}
+
+/** 票 35：可展开行的指示箭头（无动画，纯状态反馈）。 */
+@Composable
+private fun ExpandChevron(expanded: Boolean) {
+    Icon(
+        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+        contentDescription = if (expanded) "收起" else "展开",
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(20.dp),
+    )
+}
+
+/** 票 35：下钻明细行——商家（空回退类别）+ 日期 + 金额，紧凑可点。 */
+@Composable
+private fun DrilldownRow(entry: Entry, onClick: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 12.dp, top = 2.dp, bottom = 2.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                entry.merchant.ifBlank { entry.category.ifBlank { "（未命名）" } },
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+            )
+            Text(
+                entry.datePaid.take(10).ifBlank { "无日期" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        AmountText(entry.amountPaid, style = MaterialTheme.typography.bodyMedium)
     }
 }

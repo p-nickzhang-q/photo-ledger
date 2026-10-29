@@ -74,7 +74,8 @@ class CategoryTest {
     fun `新增类别——尾部追加`() = runTest {
         repo.addCategory("宠物")
         val names = repo.categoryNames()
-        assertEquals(DEFAULT_CATEGORIES + "宠物", names)
+        // 票 37：「其他」恒末尾，新增类别插在它之前
+        assertEquals(DEFAULT_CATEGORIES.dropLast(1) + "宠物" + FALLBACK_CATEGORY, names)
     }
 
     @Test
@@ -116,5 +117,53 @@ class CategoryTest {
         assertIllegal { repo.deleteCategory(fallbackId) }
         assertIllegal { repo.renameCategory(fallbackId, "杂项") }
         assertTrue(repo.categoryNames().contains(FALLBACK_CATEGORY))
+    }
+
+    // ---- 票 36：拖拽排序 ----
+
+    @Test
+    fun `类别排序——按传入 id 顺序重写并持久`() = runTest {
+        val names = repo.categoryNames()                       // 票 37：「其他」已在末尾
+        val others = names.filter { it != FALLBACK_CATEGORY }
+        val ids = db.categoryDao().list().associate { it.name to it.id }
+        // 把最后一个可排序类别拖到最前
+        val moved = listOf(others.last()) + others.dropLast(1)
+        repo.reorderCategories(moved.map { ids.getValue(it) })
+        assertEquals(moved + FALLBACK_CATEGORY, repo.categoryNames())
+        // 再拖回原顺序
+        repo.reorderCategories(others.map { ids.getValue(it) })
+        assertEquals(names, repo.categoryNames())
+    }
+
+    @Test
+    fun `类别排序——未列出的 id 保持相对顺序追加尾部`() = runTest {
+        val others = repo.categoryNames().filter { it != FALLBACK_CATEGORY }
+        val ids = db.categoryDao().list().associate { it.name to it.id }
+        // 只传最后一类，其余应原序跟在后面，「其他」仍垫底
+        val moved = others.last()
+        repo.reorderCategories(listOf(ids.getValue(moved)))
+        assertEquals(listOf(moved) + others.dropLast(1) + FALLBACK_CATEGORY, repo.categoryNames())
+    }
+
+    // ---- 票 37：「其他」恒在末尾 ----
+
+    @Test
+    fun `其他恒末尾——重排传入的中间位置被忽略`() = runTest {
+        val names = repo.categoryNames()
+        val ids = db.categoryDao().list().associate { it.name to it.id }
+        val fallbackId = ids.getValue(FALLBACK_CATEGORY)
+        val others = names.filter { it != FALLBACK_CATEGORY }
+        // 故意把「其他」插到第三位传进来
+        val withFallbackMiddle = others.take(2) + FALLBACK_CATEGORY + others.drop(2)
+        repo.reorderCategories(withFallbackMiddle.map { ids.getValue(it) })
+        assertEquals(FALLBACK_CATEGORY, repo.categoryNames().last())
+    }
+
+    @Test
+    fun `其他恒末尾——库里 sort_order 被改到最前，读取仍排末尾`() = runTest {
+        val fallback = db.categoryDao().list().first { it.name == FALLBACK_CATEGORY }
+        db.categoryDao().update(fallback.copy(sortOrder = -1))
+        assertEquals(FALLBACK_CATEGORY, repo.categories.first().last().name)
+        assertEquals(FALLBACK_CATEGORY, repo.categoryNames().last())
     }
 }

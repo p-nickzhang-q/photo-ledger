@@ -37,3 +37,11 @@ fun monthStats(entries: List<Entry>): MonthStats? {
         maxLabel = label,
     )
 }
+
+/** 票 35：汇总页下钻——账目按月分组（月键 = datePaid 前 7 位；空日期归 ""，与 MonthTotal 同口径）。 */
+fun entriesByMonth(entries: List<Entry>): Map<String, List<Entry>> =
+    entries.groupBy { it.datePaid.take(7) }
+
+/** 票 35：汇总页下钻——某月按类别分组的账目（月内保持入参顺序，即 date_paid 倒序）。 */
+fun entriesByCategory(entries: List<Entry>, month: String): Map<String, List<Entry>> =
+    entriesByMonth(entries)[month].orEmpty().groupBy { it.category }
