@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Queue
@@ -48,6 +49,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -87,6 +89,7 @@ import io.github.pnickzhangq.photoledger.ui.LedgerTheme
 import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
 import io.github.pnickzhangq.photoledger.ui.DraftForm
 import io.github.pnickzhangq.photoledger.ui.EntryEditScreen
+import io.github.pnickzhangq.photoledger.ui.EntryEditState
 import io.github.pnickzhangq.photoledger.ui.EntryForm
 import io.github.pnickzhangq.photoledger.ui.ImportQueueScreen
 import io.github.pnickzhangq.photoledger.ui.LedgerListScreen
@@ -387,6 +390,15 @@ class MainActivity : ComponentActivity() {
         val searching = searchOpen && searchQuery.isNotBlank()
         val displayTotals = if (searching) searchTotals else monthTotals
 
+        // 票 38：详情页表单状态上提——顶栏「保存」与表单共用同一份状态
+        val detailEntry = (current as? Page.Detail)?.let { p -> entries.firstOrNull { it.id == p.entryId } }
+        val detailState = if (detailEntry != null) {
+            remember(detailEntry.id) { EntryEditState(detailEntry) }
+        } else {
+            null
+        }
+        var detailDeleteRequest by remember(detailEntry?.id) { mutableStateOf(false) }
+
         // 票 34：列表滚动位置在 AppScaffold 层存活——详情页替换掉列表页时状态不销毁
         val ledgerListState = androidx.compose.foundation.lazy.rememberLazyListState()
         // 票 35：汇总页下钻的展开态与滚动位置同理（点明细进详情再返回不塌回顶部）
@@ -456,7 +468,27 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     actions = {
-                        if (current is Page.Ledger && searchActive) {
+                        if (current is Page.Detail) {
+                            // 票 38：主操作「保存」固定在顶栏；破坏性操作收进 ⋮（锈红，需两步才点得到）
+                            if (detailEntry != null && detailState != null) {
+                                var showDetailMenu by remember { mutableStateOf(false) }
+                                TextButton(
+                                    onClick = { lifecycleScope.launch { saveEdit(detailEntry, detailState.toForm()) } },
+                                ) { Text("保存") }
+                                IconButton(onClick = { showDetailMenu = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+                                }
+                                DropdownMenu(expanded = showDetailMenu, onDismissRequest = { showDetailMenu = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("删除这条账目", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                        },
+                                        onClick = { showDetailMenu = false; detailDeleteRequest = true },
+                                    )
+                                }
+                            }
+                        } else if (current is Page.Ledger && searchActive) {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = ::closeSearch) {
                                     Icon(Icons.Filled.Close, contentDescription = "清除搜索")
@@ -632,16 +664,18 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                     is Page.Detail -> {
-                        val entry = entries.firstOrNull { it.id == p.entryId }
-                        if (entry == null) {
+                        val entry = detailEntry
+                        if (entry == null || detailState == null) {
                             Text("账目不存在（已删除？）", Modifier.padding(16.dp))
                             OutlinedButton(onClick = ::goBack, Modifier.padding(16.dp)) { Text("返回") }
                         } else {
                             EntryEditScreen(
                                 entry = entry,
+                                state = detailState,
                                 photoDir = File(File(filesDir, "ledger"), "photos"),
                                 categories = categoryNames,
-                                onSave = { form -> lifecycleScope.launch { saveEdit(entry, form) } },
+                                requestDelete = detailDeleteRequest,
+                                onDismissDelete = { detailDeleteRequest = false },
                                 onDelete = { alsoPhoto -> lifecycleScope.launch { repo.delete(entry, alsoPhoto); goBack() } },
                             )
                         }

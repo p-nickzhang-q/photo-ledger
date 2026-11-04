@@ -52,20 +52,27 @@ data class EntryForm(
     var category: String,
 )
 
+/** 详情页表单状态：顶栏「保存」与表单共用同一份状态（票 38）。 */
+class EntryEditState(entry: Entry) {
+    var merchant by mutableStateOf(entry.merchant)
+    var amount by mutableStateOf(entry.amountPaid.toString())
+    var date by mutableStateOf(entry.datePaid.take(10))
+    var category by mutableStateOf(entry.category)
+
+    fun toForm() = EntryForm(merchant, amount, date, category)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EntryEditScreen(
     entry: Entry,
+    state: EntryEditState,
     photoDir: File?,               // 有原图时非空
     categories: List<String>,
-    onSave: (EntryForm) -> Unit,
+    requestDelete: Boolean,        // 顶栏 ⋮ →「删除这条账目」置位
+    onDismissDelete: () -> Unit,
     onDelete: (alsoPhoto: Boolean) -> Unit,
 ) {
-    var merchant by remember(entry.id) { mutableStateOf(entry.merchant) }
-    var amount by remember(entry.id) { mutableStateOf(entry.amountPaid.toString()) }
-    var date by remember(entry.id) { mutableStateOf(entry.datePaid.take(10)) }
-    var category by remember(entry.id) { mutableStateOf(entry.category) }
-    var showDeleteDialog by remember { mutableStateOf(false) }
     var showPhotoViewer by remember { mutableStateOf(false) }
 
     Column(
@@ -89,16 +96,16 @@ fun EntryEditScreen(
         }
 
         OutlinedTextField(
-            value = merchant, onValueChange = { merchant = it },
+            value = state.merchant, onValueChange = { state.merchant = it },
             label = { Text("商家") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = amount, onValueChange = { amount = it },
+            value = state.amount, onValueChange = { state.amount = it },
             label = { Text("实付款金额") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        DateField(value = date, onValueChange = { date = it })
+        DateField(value = state.date, onValueChange = { state.date = it })
         OutlinedTextField(
-            value = category, onValueChange = { category = it },
+            value = state.category, onValueChange = { state.category = it },
             label = { Text("类别") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         FlowRow(
@@ -107,21 +114,8 @@ fun EntryEditScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             categories.forEach { c ->
-                OutlinedButton(onClick = { category = c }) { Text(c, style = MaterialTheme.typography.labelMedium) }
+                OutlinedButton(onClick = { state.category = c }) { Text(c, style = MaterialTheme.typography.labelMedium) }
             }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = {
-                    onSave(EntryForm(merchant, amount, date, category))
-                },
-                modifier = Modifier.weight(1f),
-            ) { Text("保存") }
-            OutlinedButton(
-                onClick = { showDeleteDialog = true },
-                modifier = Modifier.weight(1f),
-            ) { Text("删除") }
         }
     }
 
@@ -134,10 +128,10 @@ fun EntryEditScreen(
         }
     }
 
-    if (showDeleteDialog) {
+    if (requestDelete) {
         var alsoPhoto by remember { mutableStateOf(entry.photoPath != null) }
         AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
+            onDismissRequest = onDismissDelete,
             title = { Text("删除这条账目？") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -154,7 +148,7 @@ fun EntryEditScreen(
                 TextButton(onClick = { onDelete(alsoPhoto) }) { Text("删除") }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
+                TextButton(onClick = onDismissDelete) { Text("取消") }
             },
         )
     }
