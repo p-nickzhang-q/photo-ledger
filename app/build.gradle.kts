@@ -23,8 +23,8 @@ android {
         applicationId = "io.github.pnickzhangq.photoledger"
         minSdk = 29
         targetSdk = 36
-        versionCode = 35
-        versionName = "0.5.3"
+        versionCode = 36
+        versionName = "0.5.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // 票 04：冒烟阶段只出 arm64（目标机 V2183A）；后续需要再扩
