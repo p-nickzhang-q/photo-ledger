@@ -70,11 +70,19 @@ class LedgerRepositoryTest {
             editedMerchant = "手改店名",
             editedAmount = 99.9,
             editedCategory = "购物",
+            editedContent = "拿铁×1",
+            promptTokens = 1200,
+            completionTokens = 150,
+            totalTokens = 1350,
         )
         val entry = repo.entries.first().single()
         assertEquals("手改店名", entry.merchant)
         assertEquals(99.9, entry.amountPaid, 0.001)
         assertEquals("购物", entry.category)
+        assertEquals("拿铁×1", entry.content)
+        assertEquals(1200, entry.promptTokens)
+        assertEquals(150, entry.completionTokens)
+        assertEquals(1350, entry.totalTokens)
         // 未编辑字段沿用 Draft
         assertEquals("2026-08-18 12:30:00", entry.datePaid)
         assertEquals(DateSource.PAYMENT_TIME.name, entry.dateSource)

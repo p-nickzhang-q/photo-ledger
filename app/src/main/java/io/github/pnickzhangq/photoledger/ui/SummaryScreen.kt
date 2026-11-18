@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -295,9 +296,12 @@ private fun DrilldownRow(entry: Entry, onClick: () -> Unit) {
                 maxLines = 1,
             )
             Text(
-                entry.datePaid.take(10).ifBlank { "无日期" },
+                entry.datePaid.take(10).ifBlank { "无日期" } +
+                    if (entry.content.isNotBlank()) " · ${entry.content}" else "",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         AmountText(entry.amountPaid, style = MaterialTheme.typography.bodyMedium)

@@ -11,12 +11,14 @@ class EntrySearchTest {
         amountPaid: Double = 0.0,
         datePaid: String = "",
         category: String = "餐饮",
+        content: String = "",
     ) = Entry(
         merchant = merchant,
         amountPaid = amountPaid,
         datePaid = datePaid,
         dateSource = "PAYMENT_TIME",
         orderStatus = "",
+        content = content,
         category = category,
         photoPath = null,
         thumbPath = null,
@@ -25,7 +27,7 @@ class EntrySearchTest {
     private val entries = listOf(
         entry(merchant = "如意馄饨", amountPaid = 14.5, datePaid = "2026-08-18 12:30:00", category = "餐饮"),
         entry(merchant = "", amountPaid = 29.90, datePaid = "2026-09-18 08:00:00", category = "交通"),
-        entry(merchant = "全家便利店", amountPaid = 120.0, datePaid = "2026-09-01", category = "日用"),
+        entry(merchant = "全家便利店", amountPaid = 120.0, datePaid = "2026-09-01", category = "日用", content = "三明治、咖啡"),
     )
 
     @Test
@@ -42,6 +44,11 @@ class EntrySearchTest {
     @Test
     fun `按类别过滤`() {
         assertEquals(1, filterEntries(entries, "交通").size)
+    }
+
+    @Test
+    fun `按具体内容过滤`() {
+        assertEquals(listOf("全家便利店"), filterEntries(entries, "三明治").map { it.merchant })
     }
 
     @Test

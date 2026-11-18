@@ -9,6 +9,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:theme="@style/Theme.PhotoLedger">
         <!-- 票 14：OpenCL 是厂商非公开库（linker namespace 拦截），须显式声明才能被 LiteRT GPU 后端 dlopen -->
         <uses-native-library android:name="libOpenCL.so" />

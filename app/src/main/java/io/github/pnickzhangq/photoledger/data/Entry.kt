@@ -33,6 +33,13 @@ data class Entry(
     @ColumnInfo(name = "order_status")
     val orderStatus: String,
 
+    /**
+     * 具体内容（票 39）：商品/服务名列表，如「冰美式×2、可颂」，不含价格。
+     * 仅云端识别引擎产出；端侧内置识别留空。v4 起有列，旧库迁移默认空串。
+     */
+    @ColumnInfo(name = "content", defaultValue = "''")
+    val content: String = "",
+
     /** 类别。类别体系属票 08，本票为自由字符串（默认集与提取器一致）。 */
     val category: String,
 
@@ -51,4 +58,12 @@ data class Entry(
     /** 最后编辑时间（epoch millis）。 */
     @ColumnInfo(name = "modified_at")
     val modifiedAt: Long = createdAt,
+
+    /** 票 45：云端识别本图消耗的 token（旧账目/端侧识别为 null）。 */
+    @ColumnInfo(name = "prompt_tokens")
+    val promptTokens: Int? = null,
+    @ColumnInfo(name = "completion_tokens")
+    val completionTokens: Int? = null,
+    @ColumnInfo(name = "total_tokens")
+    val totalTokens: Int? = null,
 )

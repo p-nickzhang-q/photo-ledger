@@ -30,11 +30,17 @@ data class BackupEntry(
     val datePaid: String,
     val dateSource: String,
     val orderStatus: String,
+    /** 票 40：具体内容；旧备份无此键时默认空串。 */
+    val content: String = "",
     val category: String,
     val photoPath: String? = null,
     val thumbPath: String? = null,
     val createdAt: Long,
     val modifiedAt: Long,
+    /** 票 45：云端 token 用量；旧备份无此键时为 null。 */
+    val promptTokens: Int? = null,
+    val completionTokens: Int? = null,
+    val totalTokens: Int? = null,
 )
 
 @Serializable
@@ -73,11 +79,15 @@ object BackupCodec {
                     datePaid = it.datePaid,
                     dateSource = it.dateSource,
                     orderStatus = it.orderStatus,
+                    content = it.content,
                     category = it.category,
                     photoPath = it.photoPath,
                     thumbPath = it.thumbPath,
                     createdAt = it.createdAt,
                     modifiedAt = it.modifiedAt,
+                    promptTokens = it.promptTokens,
+                    completionTokens = it.completionTokens,
+                    totalTokens = it.totalTokens,
                 )
             },
         )
@@ -101,11 +111,15 @@ object BackupCodec {
      * 列为账目的人类可读字段；id / 照片内部路径不入 CSV（对 Excel 读者无意义）。
      */
     fun toCsv(entries: List<Entry>): String {
-        val header = listOf("付款时间", "商家", "实付款", "币种", "类别", "日期口径", "订单状态", "创建时间", "修改时间")
+        val header = listOf(
+            "付款时间", "商家", "内容", "实付款", "币种", "类别", "日期口径", "订单状态",
+            "创建时间", "修改时间", "输入Token", "输出Token", "总Token",
+        )
         val rows = entries.map { e ->
             listOf(
                 e.datePaid,
                 e.merchant,
+                e.content,
                 e.amountPaid.toPlainString(),
                 e.currency,
                 e.category,
@@ -113,6 +127,9 @@ object BackupCodec {
                 e.orderStatus,
                 formatMillis(e.createdAt),
                 formatMillis(e.modifiedAt),
+                e.promptTokens?.toString().orEmpty(),
+                e.completionTokens?.toString().orEmpty(),
+                e.totalTokens?.toString().orEmpty(),
             )
         }
         return CSV_BOM + (listOf(header) + rows).joinToString("\r\n") { row ->
@@ -154,11 +171,15 @@ fun BackupData.toEntryList(): List<Entry> = entries.map {
         datePaid = it.datePaid,
         dateSource = it.dateSource,
         orderStatus = it.orderStatus,
+        content = it.content,
         category = it.category,
         photoPath = it.photoPath,
         thumbPath = it.thumbPath,
         createdAt = it.createdAt,
         modifiedAt = it.modifiedAt,
+        promptTokens = it.promptTokens,
+        completionTokens = it.completionTokens,
+        totalTokens = it.totalTokens,
     )
 }
 

@@ -174,6 +174,18 @@ private fun ImportItemCard(
                                 "（提取 ${((item.durationMs ?: 0) / 100f).toInt() / 10f}s）",
                             style = MaterialTheme.typography.bodySmall,
                         )
+                        // 票 43：云端失败回退端侧时明确告知，避免用户疑惑商家/内容为何为空
+                        doneState.note?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    // 票 45：云端 token 用量（端侧/回退为空，不占位）
+                    item.usage?.takeIf { !it.isEmpty }?.let {
+                        Text(
+                            "云端用量：${it.display()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

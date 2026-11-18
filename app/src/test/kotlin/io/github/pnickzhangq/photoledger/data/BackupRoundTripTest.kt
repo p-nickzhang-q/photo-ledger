@@ -38,6 +38,7 @@ class BackupRoundTripTest {
         dateSource = DateSource.PAYMENT_TIME,
         orderStatus = "已完成",
         category = "餐饮",
+        content = "冰美式×2、可颂",
     )
 
     @Before
@@ -85,7 +86,14 @@ class BackupRoundTripTest {
             category = "餐饮",
         )
         val e = repo1.entries.first().first { it.merchant == "时间戳分离" }
-        repo1.edit(e) { copy(merchant = "时间戳分离改") }
+        repo1.edit(e) {
+            copy(
+                merchant = "时间戳分离改",
+                promptTokens = 1200,
+                completionTokens = 150,
+                totalTokens = 1350,
+            )
+        }
     }
 
     @Test
@@ -107,11 +115,15 @@ class BackupRoundTripTest {
             assertEquals(src.datePaid, dst.datePaid)
             assertEquals(src.dateSource, dst.dateSource)
             assertEquals(src.orderStatus, dst.orderStatus)
+            assertEquals(src.content, dst.content)
             assertEquals(src.category, dst.category)
             assertEquals(src.photoPath, dst.photoPath)
             assertEquals(src.thumbPath, dst.thumbPath)
             assertEquals(src.createdAt, dst.createdAt)
             assertEquals(src.modifiedAt, dst.modifiedAt)
+            assertEquals(src.promptTokens, dst.promptTokens)
+            assertEquals(src.completionTokens, dst.completionTokens)
+            assertEquals(src.totalTokens, dst.totalTokens)
         }
     }
 
@@ -153,6 +165,20 @@ class BackupRoundTripTest {
     }
 
     @Test
+    fun `旧备份无 content 键——默认空串可恢复`() {
+        val old = """
+            {"format":"photo-ledger-backup","version":1,"exportedAt":"t","entries":[
+              {"id":1,"merchant":"旧账","amountPaid":9.9,"currency":"CNY",
+               "datePaid":"2026-01-01 10:00:00","dateSource":"PAYMENT_TIME",
+               "orderStatus":"","category":"餐饮","createdAt":1,"modifiedAt":1}
+            ]}
+        """.trimIndent()
+        val data = BackupCodec.decode(old)
+        assertEquals("", data.entries.single().content)
+        assertEquals("旧账", data.toEntryList().single().merchant)
+    }
+
+    @Test
     fun `decode 拒绝非备份文件`() {
         try {
             BackupCodec.decode("""{"hello":"world"}""")
@@ -169,7 +195,10 @@ class BackupRoundTripTest {
         val csv = BackupCodec.toCsv(entries)
         assertTrue(csv.startsWith(BackupCodec.CSV_BOM))
         val firstLine = csv.removePrefix(BackupCodec.CSV_BOM).substringBefore("\r\n")
-        assertEquals("付款时间,商家,实付款,币种,类别,日期口径,订单状态,创建时间,修改时间", firstLine)
+        assertEquals(
+            "付款时间,商家,内容,实付款,币种,类别,日期口径,订单状态,创建时间,修改时间,输入Token,输出Token,总Token",
+            firstLine,
+        )
         assertEquals(entries.size + 1, csv.split("\r\n").size)
     }
 

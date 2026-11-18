@@ -2,6 +2,8 @@
 // v1→v2 迁移只建表，不触碰既有 entries 数据；种子八类在 onOpen 空表时补插
 // （首次安装与迁移后都走同一条种子路径）。
 // v3（票 27）：+ merchant_memory 表（商户记忆），只建表不碰既有数据。
+// v4（票 40）：entries + content 列（具体内容，云端识别产出），既有行默认空串。
+// v5（票 45）：entries + token 用量三列（云端识别），旧行为 NULL 不补。
 package io.github.pnickzhangq.photoledger.data
 
 import android.content.Context
@@ -15,7 +17,7 @@ import com.pnickzhangq.photoledger.engine.DEFAULT_MERCHANT_MEMORY
 
 @Database(
     entities = [Entry::class, CategoryEntity::class, MerchantMemoryEntity::class],
-    version = 3,
+    version = 5,
     exportSchema = true,
 )
 abstract class LedgerDatabase : RoomDatabase() {
@@ -57,6 +59,22 @@ abstract class LedgerDatabase : RoomDatabase() {
                         "`lastUsedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`alias`))",
                 )
+            }
+        }
+
+        /** v3 → v4（+entries.content）。旧行补空串，与端侧识别口径一致。 */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE entries ADD COLUMN content TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /** v4 → v5（+token 用量）。全部可空，旧行不补。 */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE entries ADD COLUMN prompt_tokens INTEGER")
+                db.execSQL("ALTER TABLE entries ADD COLUMN completion_tokens INTEGER")
+                db.execSQL("ALTER TABLE entries ADD COLUMN total_tokens INTEGER")
             }
         }
 
@@ -102,7 +120,7 @@ abstract class LedgerDatabase : RoomDatabase() {
                     LedgerDatabase::class.java,
                     NAME,
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .addCallback(SEED_CALLBACK)
                     .build()
                     .also { INSTANCE = it }

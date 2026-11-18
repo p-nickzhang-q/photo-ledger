@@ -41,6 +41,11 @@ data class Draft(
      * 模型不输出此字段，引擎在 OCR 路线提取后填写；确认页据此提示重点核对。
      */
     val needsReview: Boolean = false,
+    /**
+     * 具体内容（票 39）：商品/服务名列表，如「冰美式×2、可颂」，不含价格。
+     * 仅云端识别输出；端侧 0.6B 契约不产出，默认空串（PromptBuilder/GBNF/DraftNormalizer 不动）。
+     */
+    val content: String = "",
 )
 
 /** 模型输出无法解析为合法 Draft 时抛出。 */

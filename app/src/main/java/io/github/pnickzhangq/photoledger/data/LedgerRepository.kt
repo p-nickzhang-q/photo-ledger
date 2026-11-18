@@ -167,6 +167,10 @@ class LedgerRepository(
         editedCategory: String = draft.category,
         editedCurrency: String = draft.currency,
         editedOrderStatus: String = draft.orderStatus,
+        editedContent: String = draft.content,
+        promptTokens: Int? = null,
+        completionTokens: Int? = null,
+        totalTokens: Int? = null,
         photoBytes: ByteArray? = null,
         thumb: Bitmap? = null,
     ): Long {
@@ -180,9 +184,13 @@ class LedgerRepository(
                 datePaid = editedDate,
                 dateSource = draft.dateSource.name,
                 orderStatus = editedOrderStatus,
+                content = editedContent,
                 category = editedCategory,
                 photoPath = photoPath,
                 thumbPath = thumbPath,
+                promptTokens = promptTokens,
+                completionTokens = completionTokens,
+                totalTokens = totalTokens,
             ),
         )
     }

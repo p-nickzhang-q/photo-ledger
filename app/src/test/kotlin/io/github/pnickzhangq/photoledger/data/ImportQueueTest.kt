@@ -100,6 +100,28 @@ class ImportQueueTest {
         assertEquals(listOf(draftB), (items[1].state as ImportState.Done).drafts)
     }
 
+    @Test
+    fun `云端失败回退的提示透传到队列项`() = runTest {
+        val fake = FakeExtractor(
+            mapOf(
+                "image-one" to ExtractionOutcome.Success(
+                    listOf(draftA),
+                    note = "云端失败（云端请求超时），已用端侧识别",
+                    usage = TokenUsage(100, 20, 120),
+                ),
+            ),
+        )
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png")
+
+        queue.runPending()
+        val done = queue.items.value.single().state as ImportState.Done
+
+        assertEquals("云端失败（云端请求超时），已用端侧识别", done.note)
+        assertEquals(listOf(draftA), done.drafts)
+        assertEquals(TokenUsage(100, 20, 120), queue.items.value.single().usage)
+    }
+
     // ---- 单张失败不阻塞 ----
 
     @Test
@@ -268,6 +290,32 @@ class ImportQueueTest {
         // 落库内容与下标对应（顺序不乱）
         val entries = db.entryDao().observeAll().first()
         assertEquals(listOf(draftB.amountPaid, draftA.amountPaid), entries.map { it.amountPaid })
+    }
+
+    @Test
+    fun `云端用量随确认写入每条账目`() = runTest {
+        val fake = FakeExtractor(
+            mapOf(
+                "image-one" to ExtractionOutcome.Success(
+                    listOf(draftA, draftB),
+                    usage = TokenUsage(1000, 100, 1100),
+                ),
+            ),
+        )
+        val queue = queueWith(fake)
+        queue.enqueue(img1, "a.png")
+        queue.runPending()
+        assertEquals(TokenUsage(1000, 100, 1100), queue.items.value.single().usage)
+
+        queue.confirmAll(queue.items.value.single())
+
+        val entries = db.entryDao().observeAll().first()
+        assertEquals(2, entries.size)
+        assertTrue(
+            entries.all {
+                it.promptTokens == 1000 && it.completionTokens == 100 && it.totalTokens == 1100
+            },
+        )
     }
 
     @Test

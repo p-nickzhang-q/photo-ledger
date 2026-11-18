@@ -6,6 +6,7 @@ This file provides guidance to the AI agent when working with code in this repos
 
 - `engine/` 纯 Kotlin 共享引擎：OCR 后处理、PromptBuilder、GrammarGenerator（GBNF/JSON Schema 约束）、DraftNormalizer、闸门评分
 - `engine-llamacpp/` llama.cpp 后端（对照保留）；`cli/` 桌面质量闸门；`app/` Android 应用（LiteRT-LM，OCR + 0.6B 约束解码）
+- `app/.../cloud/` 可选云端识别（票 39-44，默认关闭）：OpenAI 兼容视觉接口客户端 + 配置；`engine/.../cloud/` 云端 prompt 与纯函数解析器（可 WSL 单测）。云端走独立 prompt/parser，不碰端侧 GBNF / JSON Schema
 
 ## 构建环境（硬约束：WSL + Windows 双侧）
 
@@ -31,7 +32,9 @@ This file provides guidance to the AI agent when working with code in this repos
 
 `PromptBuilder`（prompt 字段说明）↔ `GrammarGenerator.fromSchema`（GBNF，llama.cpp 用）/ `toJsonSchema`（JSON Schema，LiteRT LLGuidance 用）↔ `DraftNormalizer`（解析与默认值）。
 
-当前 Draft 契约只有 3 个模型输出字段：amountPaid / datePaid / category。currency=CNY、dateSource=PAYMENT_TIME、orderStatus 由引擎默认值承接；datePaid 空串合法（App 入账时自动填导入当天）。**merchant 已退出模型输出**（2026-09：0.6B 抄写中文店名太弱——prompt 示例泄漏/列表截断碎片/抄错行，真机连续出错），Draft.merchant 留空由用户详情页后补；列表行主标题回退「商家（手填）→ 类别」。
+当前**端侧** Draft 契约只有 3 个模型输出字段：amountPaid / datePaid / category。currency=CNY、dateSource=PAYMENT_TIME、orderStatus 由引擎默认值承接；datePaid 空串合法（App 入账时自动填导入当天）。**端侧 merchant 已退出模型输出**（2026-09：0.6B 抄写中文店名太弱——prompt 示例泄漏/列表截断碎片/抄错行，真机连续出错），端侧留空由商户记忆/用户详情页补填；**云端识别引擎**（票 39-44，默认关闭）会直接产出 merchant 与 content。Draft 另有 `content`（具体内容，云端专用，端侧默认空串）。列表行主标题回退「商家→类别」，content 非空时列表/汇总补一行。
+
+以上三处耦合只约束端侧路线；云端走 `CloudPromptBuilder` + `CloudDraftParser`，改云端契约不需要跑 30 张闸门，但字段校验（金额范围/日期格式/类别有效性）必须保留。
 
 ## 已知死路（勿重复踩）
 

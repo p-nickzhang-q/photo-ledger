@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -226,6 +227,16 @@ private fun EntryRow(entry: Entry, thumbDir: File, photoDir: File, onEntryClick:
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
+            // 票 44：云端识别出的具体内容作为第三行（单行省略），端侧条目为空不占位
+            if (entry.content.isNotBlank()) {
+                Text(
+                    entry.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         AmountText(entry.amountPaid, style = MaterialTheme.typography.titleMedium)
     }

@@ -16,7 +16,13 @@ import java.security.MessageDigest
 
 /** 单张提取结果（注入点返回类型）：成功带 Draft 列表，失败带用户可读原因。 */
 sealed class ExtractionOutcome {
-    data class Success(val drafts: List<Draft>) : ExtractionOutcome()
+    /** note（票 43）：云端失败回退端侧等需要让用户知道的情况；正常为空。
+     *  usage（票 45）：云端识别的 token 用量；端侧/回退为空。 */
+    data class Success(
+        val drafts: List<Draft>,
+        val note: String? = null,
+        val usage: TokenUsage? = null,
+    ) : ExtractionOutcome()
     data class Failure(val reason: String) : ExtractionOutcome()
 }
 
@@ -32,6 +38,8 @@ sealed class ImportState {
     data class Done(
         val drafts: List<Draft>,
         val confirmed: Set<Int> = emptySet(),
+        /** 票 43：提取阶段的可读提示（如「云端失败，已用端侧识别」）。 */
+        val note: String? = null,
     ) : ImportState()
 
     /** 去重命中：这张已导入过（同批或已入库），不重复成账。 */
@@ -57,6 +65,8 @@ data class ImportItem(
     val startedAtMs: Long? = null,
     /** 提取耗时（进入终态时写入）。 */
     val durationMs: Long? = null,
+    /** 票 45：云端识别的 token 用量（端侧/回退为空）。 */
+    val usage: TokenUsage? = null,
 )
 
 class ImportQueue(
@@ -136,16 +146,22 @@ class ImportQueue(
                 }
                 val durationMs = System.currentTimeMillis() - startedAt
                 val finalState = when (outcome) {
-                    is ExtractionOutcome.Success -> ImportState.Done(outcome.drafts)
+                    is ExtractionOutcome.Success -> ImportState.Done(outcome.drafts, note = outcome.note)
                     is ExtractionOutcome.Failure -> {
                         // 失败不算「已导入」：回退入队时预记的哈希，同一张之后可重选重试
                         mutex.withLock { importedHashes.remove(item.hash) }
                         ImportState.Failed(outcome.reason)
                     }
                 }
+                val usage = (outcome as? ExtractionOutcome.Success)?.usage
                 mutex.withLock {
                     _items.value = _items.value.toMutableList().also {
-                        it[next] = item.copy(state = finalState, startedAtMs = startedAt, durationMs = durationMs)
+                        it[next] = item.copy(
+                            state = finalState,
+                            startedAtMs = startedAt,
+                            durationMs = durationMs,
+                            usage = usage,
+                        )
                     }
                 }
             }
@@ -184,7 +200,15 @@ class ImportQueue(
         } else {
             draft
         }
-        repo.confirm(draft = effective, photoBytes = _items.value[idx].bytes)
+        // 票 45：用量随确认入账落到每条 Entry；一图多单时各单记同一份（按图片计费）
+        val usage = _items.value[idx].usage
+        repo.confirm(
+            draft = effective,
+            promptTokens = usage?.prompt,
+            completionTokens = usage?.completion,
+            totalTokens = usage?.total,
+            photoBytes = _items.value[idx].bytes,
+        )
         val confirmed = state.confirmed + index
         val newState = if (confirmed.size == state.drafts.size) {
             ImportState.Confirmed(state.drafts)

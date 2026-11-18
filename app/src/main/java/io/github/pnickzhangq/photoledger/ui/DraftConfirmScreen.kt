@@ -37,6 +37,7 @@ import com.pnickzhangq.photoledger.engine.Draft
 /** 确认界面的可编辑字段状态（初值来自 Draft，确认时整体提交）。 */
 data class DraftForm(
     var merchant: String,
+    var content: String,
     var amountPaid: String,
     var datePaid: String,
     var category: String,
@@ -52,6 +53,7 @@ fun DraftConfirmScreen(
     onDiscard: () -> Unit,
 ) {
     var merchant by remember { mutableStateOf(draft.merchant) }
+    var content by remember { mutableStateOf(draft.content) }
     var amount by remember { mutableStateOf(draft.amountPaid.toString()) }
     var date by remember { mutableStateOf(draft.datePaid.take(10)) }
     var category by remember { mutableStateOf(draft.category) }
@@ -85,6 +87,12 @@ fun DraftConfirmScreen(
             label = { Text("商家") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
+            value = content, onValueChange = { content = it },
+            label = { Text("具体内容（可选）") },
+            placeholder = { Text("如：冰美式×2、可颂") },
+            minLines = 1, maxLines = 4, modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
             value = amount, onValueChange = { amount = it },
             label = { Text("实付款金额") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
@@ -112,6 +120,7 @@ fun DraftConfirmScreen(
                     onConfirm(
                         DraftForm(
                             merchant = merchant,
+                            content = content,
                             amountPaid = amount,
                             datePaid = date,
                             category = category,

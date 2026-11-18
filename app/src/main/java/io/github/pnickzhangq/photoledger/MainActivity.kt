@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PieChart
@@ -68,11 +69,17 @@ import androidx.lifecycle.lifecycleScope
 import io.github.pnickzhangq.photoledger.data.BackupCodec
 import io.github.pnickzhangq.photoledger.data.BackupZip
 import io.github.pnickzhangq.photoledger.data.Entry
+import io.github.pnickzhangq.photoledger.data.ExtractionOutcome
 import io.github.pnickzhangq.photoledger.data.ImportQueue
 import io.github.pnickzhangq.photoledger.data.LedgerDatabase
 import io.github.pnickzhangq.photoledger.data.LedgerRepository
 import io.github.pnickzhangq.photoledger.data.PhotoStore
 import io.github.pnickzhangq.photoledger.data.filterEntries
+import io.github.pnickzhangq.photoledger.cloud.CloudConfig
+import io.github.pnickzhangq.photoledger.cloud.CloudPrefs
+import io.github.pnickzhangq.photoledger.cloud.CloudVisionClient
+import io.github.pnickzhangq.photoledger.cloud.ImagePreprocessor
+import io.github.pnickzhangq.photoledger.cloud.RecognitionEngine
 import io.github.pnickzhangq.photoledger.data.searchMonthTotals
 import io.github.pnickzhangq.photoledger.model.ModelManager
 import io.github.pnickzhangq.photoledger.update.UpdateChecker
@@ -85,6 +92,8 @@ import io.github.pnickzhangq.photoledger.ocr.OcrLine
 import io.github.pnickzhangq.photoledger.ocr.OnDevicePipeline
 import io.github.pnickzhangq.photoledger.ui.BackupScreen
 import io.github.pnickzhangq.photoledger.ui.CategoryManageScreen
+import io.github.pnickzhangq.photoledger.ui.CloudSettingsScreen
+import io.github.pnickzhangq.photoledger.ui.CloudSettingsState
 import io.github.pnickzhangq.photoledger.ui.LedgerTheme
 import io.github.pnickzhangq.photoledger.ui.DraftConfirmScreen
 import io.github.pnickzhangq.photoledger.ui.DraftForm
@@ -114,6 +123,7 @@ private sealed class Page {
     data object CategoryManage : Page() // 票 08
     data object Summary : Page()        // 票 09
     data object Backup : Page()         // 票 11：备份与导出
+    data object CloudSettings : Page() // 票 42：识别引擎（端侧 / 云端）
 }
 
 class MainActivity : ComponentActivity() {
@@ -160,6 +170,8 @@ class MainActivity : ComponentActivity() {
     /** 票 17：模型就绪时启动即后台预加载（transport ~15s + OCR 引擎），首批导入零冷加载等待。
      *  必须跑在 Default——Main 上加载 ONNX/模型会卡住 Compose 首帧，冷启动变白屏（票 24 复盘）。 */
     private fun preloadEngines() {
+        // 票 42：云端模式不预加载端侧大模型——省内存与启动功耗；回退时再懒加载
+        if (cloudPrefs.config().engine == RecognitionEngine.CLOUD) return
         if (litertlmPath == null || detPath == null || recPath == null) return
         lifecycleScope.launch(Dispatchers.Default) {
             val t0 = System.currentTimeMillis()
@@ -195,6 +207,11 @@ class MainActivity : ComponentActivity() {
 
     // 票 10：快照状态——下载/导入完成后 rescan 让模型页与各依赖处即时感知
     private var litertlmPath: String? by mutableStateOf(null)
+
+    // ---- 识别引擎（票 41/42）----
+    private val cloudPrefs by lazy { CloudPrefs(this) }
+    // 票 46：会话 ID 跨进程稳定（网关路由/缓存优化）；UA 由客户端自带
+    private val cloudVisionClient by lazy { CloudVisionClient(sessionId = cloudPrefs.sessionId()) }
 
     // ---- 模型管理（票 10）----
     private val modelPrefs by lazy { getSharedPreferences("model", MODE_PRIVATE) }
@@ -262,7 +279,10 @@ class MainActivity : ComponentActivity() {
         totalRamBytes = ModelManager.totalRamBytes(this)
 
         // 票 10：首启无模型 → 模型页作为根页（引导下载/导入）；用户跳过或模型就绪后不再强推
-        val onboarding = litertlmPath == null && !modelPrefs.getBoolean("onboard_done", false)
+        // 票 42：已配置云端识别则同样放行——云端模式不依赖端侧模型
+        val onboarding = litertlmPath == null &&
+            !modelPrefs.getBoolean("onboard_done", false) &&
+            !cloudPrefs.config().cloudReady
         pageStack.clear()   // 防御：任何路径导致的重复 onCreate 不得叠栈
         pageStack.add(if (onboarding) Page.ModelManage else Page.Ledger)
 
@@ -428,6 +448,7 @@ class MainActivity : ComponentActivity() {
             is Page.Summary -> "汇总"
             is Page.ModelManage -> "模型管理"
             is Page.Backup -> "备份与导出"
+            is Page.CloudSettings -> "识别引擎"
             is Page.SmokeTools -> "开发工具"
         }
 
@@ -443,7 +464,7 @@ class MainActivity : ComponentActivity() {
                                 value = searchQuery,
                                 onValueChange = { searchQuery = it },
                                 placeholder = {
-                                    Text("商家 / 类别 / 金额 / 日期", style = MaterialTheme.typography.bodyMedium)
+                                    Text("商家 / 内容 / 类别 / 金额 / 日期", style = MaterialTheme.typography.bodyMedium)
                                 },
                                 singleLine = true,
                                 textStyle = MaterialTheme.typography.bodyLarge,
@@ -524,6 +545,11 @@ class MainActivity : ComponentActivity() {
                                     text = { Text("模型管理") },
                                     leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                                     onClick = { showMoreMenu = false; navigate(Page.ModelManage) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("识别引擎") },
+                                    leadingIcon = { Icon(Icons.Filled.Cloud, contentDescription = null) },
+                                    onClick = { showMoreMenu = false; navigate(Page.CloudSettings) },
                                 )
                                 // 票 31：检查更新（有新版本时红点；点击直达 Release 页）
                                 DropdownMenuItem(
@@ -645,6 +671,20 @@ class MainActivity : ComponentActivity() {
                         }} else null,
                         onOpenDevTools = { navigate(Page.SmokeTools) },
                     )
+                    is Page.CloudSettings -> {
+                        val state = remember { CloudSettingsState(cloudPrefs.config()) }
+                        CloudSettingsScreen(
+                            state = state,
+                            consentDone = cloudPrefs.consentDone(),
+                            message = importMsg,
+                            onConfigChange = { cloudPrefs.save(it) },
+                            onConsentAndEnable = {
+                                cloudPrefs.setConsentDone()
+                                cloudPrefs.save(state.toConfig().copy(engine = RecognitionEngine.CLOUD))
+                            },
+                            onTestConnection = { cloudVisionClient.ping(state.toConfig()) },
+                        )
+                    }
                     is Page.Backup -> BackupScreen(
                         entryCount = entries.size,
                         categoryCount = categoryEntities.size,
@@ -709,6 +749,7 @@ class MainActivity : ComponentActivity() {
             editedDate = form.datePaid,
             editedCategory = form.category,
             editedOrderStatus = "",   // 订单状态退出 UI（2026-09）：存量值只在编辑路径保留
+            editedContent = form.content,
             photoBytes = lastPhotoBytes,
         )
         lastPhotoBytes = null
@@ -720,6 +761,7 @@ class MainActivity : ComponentActivity() {
             // orderStatus 不在表单里：原样保留存量值（字段已退出 UI）
             copy(
                 merchant = form.merchant,
+                content = form.content,
                 amountPaid = form.amountPaid.toDoubleOrNull() ?: 0.0,
                 datePaid = form.datePaid,
                 category = form.category,
@@ -763,29 +805,85 @@ class MainActivity : ComponentActivity() {
         ).also { ocrEngine = it }
     }
 
-    /** 真实提取器：截图字节 → 解码像素 → OnDevicePipeline（transport 常驻复用）。 */
+    /** 端侧模型三件套是否齐备——云端失败回退端侧的前提。 */
+    private fun deviceModelsReady(): Boolean =
+        litertlmPath?.let(::File)?.takeIf(File::exists) != null &&
+            detPath?.let(::File)?.takeIf(File::exists) != null &&
+            recPath?.let(::File)?.takeIf(File::exists) != null
+
+    /** 端侧现管线：截图字节 → 解码像素 → OnDevicePipeline（transport 常驻复用）。 */
+    private suspend fun extractOnDevice(bytes: ByteArray): ExtractionOutcome {
+        val engine = ensureOcrEngine()
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: return ExtractionOutcome.Failure("图片解码失败")
+        val pixels = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        val w = bmp.width; val h = bmp.height
+        bmp.recycle()
+
+        // 票 08：逐张实时取当前类别列表（管理页改完，下一张提取即生效）
+        // 票 27：商户记忆同步逐张取——确认过的商户在下一张截图自动回填
+        val pipeline = OnDevicePipeline(
+            engine, obtainQueueTransport(), repo.categoryNames(),
+            merchantMemory = { repo.merchantMemories() },
+        )
+        return when (val r = pipeline.extract(pixels, w, h, fallbackYear = java.time.Year.now().value)) {
+            is ExtractResult.Success -> ExtractionOutcome.Success(r.drafts)
+            is ExtractResult.Failure -> ExtractionOutcome.Failure(r.reason)
+        }
+    }
+
+    /**
+     * 票 43：云端识别——压缩截图 → OpenAI 兼容视觉接口。
+     * 失败且端侧模型齐备时自动回退，并在队列项 note 里说明；配置不完整直接给出设置指引。
+     */
+    private suspend fun extractWithCloud(bytes: ByteArray, config: CloudConfig): ExtractionOutcome {
+        if (!config.configured) {
+            return ExtractionOutcome.Failure("云端识别未配置完整——去「识别引擎」填接口地址和模型名")
+        }
+        val started = System.currentTimeMillis()
+        return try {
+            val jpeg = ImagePreprocessor.toJpeg(bytes) ?: throw IllegalStateException("图片解码失败")
+            val base64 = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
+            val result = cloudVisionClient.extract(base64, config, repo.categoryNames())
+            Log.i(
+                TAG,
+                "CLOUD_EXTRACT_OK ms=${System.currentTimeMillis() - started} " +
+                    "drafts=${result.drafts.size} fast=${config.fastMode} " +
+                    "usage=${result.usage?.display().orEmpty()}",
+            )
+            ExtractionOutcome.Success(result.drafts, usage = result.usage)
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            // 只记异常类型与文案：不落 Key、不落请求体、不落截图内容
+            val reason = t.message ?: t.javaClass.simpleName
+            Log.w(TAG, "CLOUD_EXTRACT_FAIL ${t.javaClass.simpleName}: $reason")
+            if (!deviceModelsReady()) {
+                ExtractionOutcome.Failure("云端识别失败：$reason；端侧模型未就绪，无法回退")
+            } else {
+                // 回退本身也可能加载失败（模型损坏/OOM）：两条原因都保留，别让云端原因被吞掉
+                val fallback = try {
+                    extractOnDevice(bytes)
+                } catch (f: Throwable) {
+                    if (f is kotlinx.coroutines.CancellationException) throw f
+                    ExtractionOutcome.Failure("端侧回退异常：${f.message ?: f.javaClass.simpleName}")
+                }
+                when (fallback) {
+                    is ExtractionOutcome.Success ->
+                        fallback.copy(note = "云端失败（$reason），已用端侧识别")
+                    is ExtractionOutcome.Failure ->
+                        ExtractionOutcome.Failure("云端失败（$reason）；端侧回退也失败：${fallback.reason}")
+                }
+            }
+        }
+    }
+
+    /** 真实提取器（票 43）：逐张读取当前引擎设置，云端 / 端侧二选一。 */
     private fun makeImportExtractor(): ImportQueue.Extractor {
         return ImportQueue.Extractor { bytes ->
-            val engine = ensureOcrEngine()
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                ?: return@Extractor io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Failure("图片解码失败")
-            val pixels = IntArray(bmp.width * bmp.height)
-            bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-            val w = bmp.width; val h = bmp.height
-            bmp.recycle()
-
-            // 票 08：逐张实时取当前类别列表（管理页改完，下一张提取即生效）
-            // 票 27：商户记忆同步逐张取——确认过的商户在下一张截图自动回填
-            val pipeline = OnDevicePipeline(
-                engine, obtainQueueTransport(), repo.categoryNames(),
-                merchantMemory = { repo.merchantMemories() },
-            )
-            when (val r = pipeline.extract(pixels, w, h, fallbackYear = java.time.Year.now().value)) {
-                is io.github.pnickzhangq.photoledger.ocr.ExtractResult.Success ->
-                    io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Success(r.drafts)
-                is io.github.pnickzhangq.photoledger.ocr.ExtractResult.Failure ->
-                    io.github.pnickzhangq.photoledger.data.ExtractionOutcome.Failure(r.reason)
-            }
+            val cloud = cloudPrefs.config()
+            if (cloud.engine == RecognitionEngine.CLOUD) extractWithCloud(bytes, cloud)
+            else extractOnDevice(bytes)
         }
     }
 
@@ -1144,9 +1242,17 @@ class MainActivity : ComponentActivity() {
 
     // ---- SAF 选择器 ----
 
-    /** 票 10：相册导入前守卫——无模型直接带去模型页，不进队列白等失败。 */
+    /** 票 10：相册导入前守卫——无模型直接带去模型页，不进队列白等失败。
+     *  票 42：云端模式改为检查云端配置；配置完整时无需端侧模型即可导入。 */
     private fun launchGalleryPick() {
-        if (litertlmPath?.let(::File)?.takeIf(File::exists) == null) {
+        val cloud = cloudPrefs.config()
+        if (cloud.engine == RecognitionEngine.CLOUD) {
+            if (!cloud.configured) {
+                importMsg = "云端识别配置不完整——先填接口地址和模型名"
+                navigate(Page.CloudSettings)
+                return
+            }
+        } else if (litertlmPath?.let(::File)?.takeIf(File::exists) == null) {
             importMsg = "还没有识别模型——先下载或导入，再导入截图"
             navigate(Page.ModelManage)
             return

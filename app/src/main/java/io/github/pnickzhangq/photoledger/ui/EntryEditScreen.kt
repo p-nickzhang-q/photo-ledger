@@ -42,11 +42,13 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import io.github.pnickzhangq.photoledger.data.Entry
+import io.github.pnickzhangq.photoledger.data.tokenUsage
 import java.io.File
 
 /** 可编辑表单状态（编辑既有 Entry）。订单状态不再编辑（存量值由保存路径原样保留）。 */
 data class EntryForm(
     var merchant: String,
+    var content: String,
     var amountPaid: String,
     var datePaid: String,
     var category: String,
@@ -55,11 +57,12 @@ data class EntryForm(
 /** 详情页表单状态：顶栏「保存」与表单共用同一份状态（票 38）。 */
 class EntryEditState(entry: Entry) {
     var merchant by mutableStateOf(entry.merchant)
+    var content by mutableStateOf(entry.content)
     var amount by mutableStateOf(entry.amountPaid.toString())
     var date by mutableStateOf(entry.datePaid.take(10))
     var category by mutableStateOf(entry.category)
 
-    fun toForm() = EntryForm(merchant, amount, date, category)
+    fun toForm() = EntryForm(merchant, content, amount, date, category)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -100,6 +103,12 @@ fun EntryEditScreen(
             label = { Text("商家") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
+            value = state.content, onValueChange = { state.content = it },
+            label = { Text("具体内容（可选）") },
+            placeholder = { Text("如：冰美式×2、可颂") },
+            minLines = 1, maxLines = 4, modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
             value = state.amount, onValueChange = { state.amount = it },
             label = { Text("实付款金额") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
@@ -116,6 +125,16 @@ fun EntryEditScreen(
             categories.forEach { c ->
                 OutlinedButton(onClick = { state.category = c }) { Text(c, style = MaterialTheme.typography.labelMedium) }
             }
+        }
+
+        // 票 45：云端识别的 token 用量；旧账目/端侧识别无数据，不显示
+        entry.tokenUsage?.let {
+            Text(
+                "云端用量：${it.display()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 

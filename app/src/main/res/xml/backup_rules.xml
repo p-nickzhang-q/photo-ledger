@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 票 41：云端 API Key 只留在本机——不进入 Auto Backup（Android 11 及以下）。 -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="cloud.xml" />
+</full-backup-content>
