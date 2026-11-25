@@ -1,6 +1,6 @@
 # Photo Ledger 照片记账
 
-> 这是我用 AI agent 从 0 到 v0.5 独立完成的产品。单张提取从 596 秒优化到约 10 秒（约 60 倍），完整踩坑记录见 [端到端耗时文档](docs/design/e2e-latency-2026-09.md)。
+> 这是我用 AI agent 从 0 到 v0.5.5 独立完成的产品。单张提取从 596 秒优化到约 10 秒（约 60 倍），完整踩坑记录见 [端到端耗时文档](docs/design/e2e-latency-2026-09.md)。
 
 把支付截图变成账目——**默认全程端侧、离线、零上传**的 Android 记账应用；可选云端识别引擎补全商家与具体内容。
 
@@ -16,17 +16,25 @@
 
 真机截图（vivo V2183A）：
 
-| 账目列表 · 按月分组、月头合计 | 汇总统计 · 环比、类别占比、历史各月 |
+| 账目列表 · 按月分组、月头合计、具体内容 | 汇总统计 · 环比、类别占比、历史各月 |
 |---|---|
 | <img src="docs/images/screenshot-list.png" width="300" alt="账目列表"> | <img src="docs/images/screenshot-stats.png" width="300" alt="汇总统计"> |
 
-| 账目详情 · 截图留档、逐单核对编辑 | 更多菜单 · 检查更新带红点提示 |
+| 账目详情 · 截图留档、逐单核对编辑 | 更多菜单 · 备份、模型、识别引擎、检查更新 |
 |---|---|
 | <img src="docs/images/screenshot-detail.png" width="300" alt="账目详情"> | <img src="docs/images/screenshot-menu.png" width="300" alt="更多菜单"> |
 
 | 模型管理 · 端侧模型就绪状态、本地导入 | 备份与导出 · zip 可回灌、CSV 只出不进 |
 |---|---|
 | <img src="docs/images/screenshot-model.png" width="300" alt="模型管理"> | <img src="docs/images/screenshot-backup.png" width="300" alt="备份与导出"> |
+
+| 识别引擎 · 端侧 / 云端二选一、快速模式 | 云端结果 · 商家、具体内容与 token 用量 |
+|---|---|
+| <img src="docs/images/screenshot-engine.png" width="300" alt="识别引擎"> | <img src="docs/images/screenshot-content.png" width="300" alt="云端识别结果"> |
+
+| 汇总下钻 · 点类别或月份展开逐笔 | 类别管理 · 长按拖拽调整顺序 |
+|---|---|
+| <img src="docs/images/screenshot-drilldown.png" width="300" alt="汇总下钻"> | <img src="docs/images/screenshot-category.png" width="300" alt="类别管理"> |
 
 ## 功能
 
